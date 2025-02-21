@@ -1,0 +1,42 @@
+# ActivityWatch Configuration
+aw_server_url: "http://localhost:5600"
+aw_client_id: "vigilare"
+
+# Screenshot Configuration
+screenshot:
+  min_interval: 60  # Minimum seconds between captures
+  max_interval: 120 # Maximum seconds between captures
+  quality: 75      # JPEG quality (0-100)
+  blur_sensitive: true
+
+# Vision Processing
+vision:
+  ocr_model: "doctr"
+  ner_model: "gliner-large"
+  blur_method: "gaussian"
+  blur_intensity: 30
+
+# LLM Configuration
+llm:
+  model: "gpt-4-vision-preview"
+  embedding_model: "text-embedding-ada-002"
+  temperature: 0
+  max_tokens: 1000
+
+# Storage
+storage:
+  screenshots_dir: "data/screenshots"
+  vectors_dir: "data/vectors"
+  logs_dir: "data/logs"
+
+# Database
+database:
+  path: "data/vigilare.db"
+  pragmas:
+    journal_mode: "wal"
+    cache_size: -32000  # 32MB cache
+    foreign_keys: 1
+    synchronous: 0
+
+# Logging
+logging_config: "config/logging_config.yaml" 

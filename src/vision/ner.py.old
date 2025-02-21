@@ -1,0 +1,741 @@
+"""Named Entity Recognition using GLiNER and detect-secrets."""
+
+import logging
+import re
+import math
+from typing import List, Dict, Any
+from detect_secrets import SecretsCollection
+from detect_secrets.settings import default_settings
+from gliner import GLiNER
+
+logger = logging.getLogger(__name__)
+
+class SensitiveEntityPatterns:
+    """Patterns for detecting sensitive information."""
+    
+    # Credit card numbers (major card types)
+    CREDIT_CARD = r'\b(?:\d[ -]*?){13,16}\b'
+    
+    # Social Security Numbers (US)
+    SSN = r'\b\d{3}[-]?\d{2}[-]?\d{4}\b'
+    
+    # Email addresses
+    EMAIL = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    
+    # Phone numbers (various formats)
+    PHONE = r'\b(?:\+\d{1,2}\s?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b'
+    
+    # IP addresses
+    IP_ADDRESS = r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'
+    
+    # URLs with authentication
+    AUTH_URL = r'\b(?:https?:\/\/)([^:]+):([^@]+)@.+\b'
+
+    # API Key Patterns
+    API_KEY_PATTERNS = {
+        # Move the (?i) flag to the start of patterns that need it
+        'GENERIC_API': r'(?i)(?:api[-_]?(?:key|token|secret)|access[-_]?token|auth[-_]?(?:token|key))["\']?\s*[:=]\s*["\']?[A-Za-z0-9_\-\.]{16,}["\']?',
+        
+        'OAUTH': r'(?i)(?:bearer|access|refresh|id)[-_]?token["\']?\s*[:=]\s*["\']?[A-Za-z0-9_\-\.]{16,}["\']?',
+        
+        # AWS Access Key ID format (exact format from screenshot)
+        'AWS': r'(?:AKIA[A-Z0-9]{16}|(?:aws)?_?(?:access|secret|token)_?key["\']?\s*[:=]\s*["\']?[A-Za-z0-9/+=]{16,}["\']?)',
+        
+        # Private Key format (more precise match)
+        'PRIVATE_KEY': r'(?:MIIB|MII[A-Z])[A-Za-z0-9+/=\-]{10,}|-----BEGIN (?:RSA|DSA|EC|PGP|OPENSSH) PRIVATE KEY-----(?:[A-Za-z0-9\s+/=\-])*-----END (?:RSA|DSA|EC|PGP|OPENSSH) PRIVATE KEY-----',
+        
+        # Specific API key format from screenshot
+        'SK_PROJ': r'sk-proj-[A-Za-z0-9]{40,}',
+        
+        # Long alphanumeric keys with separators
+        'LONG_KEY': r'[A-Za-z0-9]{10,}[A-Za-z0-9_\-\.]{20,}',
+        
+        # OpenAI API keys
+        'OPENAI': r'sk-[A-Za-z0-9]{48}',
+        
+        # Project API keys (new)
+        'PROJECT_KEY': r'(?:sk|pk)-proj-[A-Za-z0-9_\-]{30,}',
+        
+        # Generic Project tokens (new)
+        'PROJECT_TOKEN': r'[A-Za-z0-9]{20}[A-Za-z0-9_\-\.]{30,}(?:==)?',
+        
+        # GitHub tokens (expanded)
+        'GITHUB': r'(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_-]{36,255}',
+        
+        # Base64 encoded secrets (more flexible)
+        'BASE64': r'(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})',
+        
+        # Firebase config keys
+        'FIREBASE': r'(?:AAAA[A-Za-z0-9_-]{7}:[A-Za-z0-9_-]{140}|AIza[0-9A-Za-z\-_]{35})',
+        
+        # Generic high entropy strings (more flexible)
+        'HIGH_ENTROPY': r'[A-Za-z0-9+/=_\-\.]{32,}',
+
+        # JWT (JSON Web Tokens) (more flexible)
+        'JWT': r'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}',
+
+        # Hashes (MD5, SHA-1, SHA-256, SHA-512) with hex validation
+        'HASH': r'\b[0-9a-fA-F]{32,128}\b(?![0-9a-fA-F])',
+        
+        # Discord Bot Token (more flexible)
+        'DISCORD': r'(?:(?:Bot|Bearer)\s+)?[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}',
+        
+        # GitLab Token (expanded)
+        'GITLAB': r'(?:glpat-|gitlab-pat-|gitlab-ci-token-)[0-9a-zA-Z\-_]{20,}',
+        
+        # IBM Cloud IAM (more flexible)
+        'IBM_CLOUD': r'iam[a-zA-Z0-9_-]{30,}',
+        
+        # Mailchimp API Key (expanded)
+        'MAILCHIMP': r'(?:[0-9a-f]{32}-us[0-9]{1,2}|key-[0-9a-f]{32})',
+        
+        # NPM Token (expanded)
+        'NPM': r'(?:npm_[A-Za-z0-9]{36}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
+        
+        # PyPI Token (more flexible)
+        'PYPI': r'pypi-[A-Za-z0-9_-]{16,}',
+        
+        # SendGrid API Key (more flexible)
+        'SENDGRID': r'SG\.[A-Za-z0-9_-]{22,}\.[A-Za-z0-9_-]{43,}',
+        
+        # Square OAuth Token (expanded)
+        'SQUARE': r'sq0(?:atp|csp|idp)-[0-9A-Za-z\-_]{22,}',
+        
+        # Telegram Bot Token (more flexible)
+        'TELEGRAM': r'[0-9]{8,10}:[a-zA-Z0-9_-]{35,}',
+        
+        # Twilio Keys (expanded)
+        'TWILIO': r'(?:SK|AC)[0-9a-fA-F]{32}',
+        
+        # Artifactory Token (more flexible)
+        'ARTIFACTORY': r'(?:AP[\dA-Z]{10,}|AKC[a-zA-Z0-9]{10,})',
+        
+        # Cloudant Credentials (more flexible)
+        'CLOUDANT': r'cloudant:[a-zA-Z0-9_-]{20,}',
+        
+        # IBM COS HMAC (more flexible)
+        'IBM_COS': r'[a-zA-Z0-9]{20,}',
+
+        # Generic Tokens (catch-all for common formats)
+        'GENERIC_TOKEN': r'(?i)(?:token|key|secret|password|credential|auth)[-_]?[A-Za-z0-9+/=_\-\.]{16,}',
+
+        # Certificate Keys
+        'CERTIFICATE': r'-----BEGIN CERTIFICATE-----(?:[A-Za-z0-9\s+/=\-])*-----END CERTIFICATE-----'
+    }
+
+class SensitiveEntityTypes:
+    """Types of sensitive information to detect."""
+    
+    PATTERNS = {
+        'CREDIT_CARD': SensitiveEntityPatterns.CREDIT_CARD,
+        'SSN': SensitiveEntityPatterns.SSN,
+        'EMAIL': SensitiveEntityPatterns.EMAIL,
+        'PHONE': SensitiveEntityPatterns.PHONE,
+        'IP_ADDRESS': SensitiveEntityPatterns.IP_ADDRESS,
+        'DATE_OF_BIRTH': r'\b(?:\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2})\b',  # Various date formats
+        'PASSPORT': r'\b[A-Z]\d{7,9}\b',  # Basic passport number pattern
+        'DRIVERS_LICENSE': r'\b[A-Z]\d{6,8}\b',  # Basic driver's license pattern
+        'BANK_ACCOUNT': r'\b\d{8,17}\b'  # Basic bank account number pattern
+    }
+    
+    # Entity types to detect with GLiNER
+    GLINER_LABELS = [
+        "Person",
+        "Location",
+        "Organization",
+        "Email",
+        "Phone",
+        "CreditCard",
+        "SSN",
+        "Address",
+        "JobTitle",
+        "DateOfBirth",
+        "Passport",
+        "DriversLicense",
+        "BankAccount",
+        "MedicalInfo",
+        "Education"
+    ]
+    
+    # Map GLiNER labels to our internal types
+    LABEL_MAPPING = {
+        'Person': 'PERSON',
+        'Location': 'LOCATION',
+        'Organization': 'ORGANIZATION',
+        'Email': 'EMAIL',
+        'Phone': 'PHONE',
+        'CreditCard': 'CREDIT_CARD',
+        'SSN': 'SSN',
+        'Address': 'ADDRESS',
+        'JobTitle': 'JOB_TITLE',
+        'DateOfBirth': 'DATE_OF_BIRTH',
+        'Passport': 'PASSPORT',
+        'DriversLicense': 'DRIVERS_LICENSE',
+        'BankAccount': 'BANK_ACCOUNT',
+        'MedicalInfo': 'MEDICAL_INFO',
+        'Education': 'EDUCATION'
+    }
+
+class NERProcessor:
+    """Handles Named Entity Recognition using GLiNER and detect-secrets."""
+    
+    def __init__(self, model_name: str = "urchade/gliner_medium-v2.1"):
+        """Initialize NER processor."""
+        try:
+            logger.info("Attempting to initialize GLiNER with model: %s", model_name)
+            # Initialize GLiNER with specific configuration
+            self.model = GLiNER.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                device="cpu"
+            )
+            self.labels = SensitiveEntityTypes.GLINER_LABELS
+            
+            # Initialize detect-secrets with plugins
+            from detect_secrets import settings
+            from detect_secrets.core.plugins.util import get_mapping_from_secret_type_to_class
+            from detect_secrets.settings import transient_settings
+            
+            plugins = {
+                'AWSKeyDetector',
+                'ArtifactoryDetector',
+                'AzureStorageKeyDetector',
+                'Base64HighEntropyString',
+                'BasicAuthDetector',
+                'CloudantDetector',
+                'DiscordBotTokenDetector',
+                'GitHubTokenDetector',
+                'GitLabApiTokenDetector',
+                'GoogleAPIKeyDetector',
+                'HexHighEntropyString',
+                'IbmCloudIamDetector',
+                'IbmCosHmacDetector',
+                'JwtTokenDetector',
+                'MailchimpDetector',
+                'NpmDetector',
+                'PrivateKeyDetector',
+                'SendGridDetector',
+                'SlackDetector',
+                'SoftlayerDetector',
+                'SquareOAuthDetector',
+                'StripeDetector',
+                'TwilioKeyDetector'
+            }
+            
+            with transient_settings({
+                'plugins_used': [{'name': plugin} for plugin in plugins]
+            }):
+                self.secrets_scanner = SecretsCollection()
+                self.secrets_scanner.scan_file = self._scan_file_wrapper  # Override scan_file method
+            
+            logger.info("Successfully initialized GLiNER model and detect-secrets plugins")
+        except Exception as e:
+            logger.error(f"Error initializing NER model: {e}")
+            logger.exception(e)  # Log full traceback
+            raise
+
+    def _scan_file_wrapper(self, filename):
+        """Wrapper for detect-secrets scan_file to handle settings properly."""
+        try:
+            from detect_secrets.core.secrets_collection import SecretsCollection
+            from detect_secrets.core.scan import scan_file
+            
+            scanner = SecretsCollection()
+            for secret in scan_file(filename):
+                scanner.data[filename].append(secret)
+            return scanner.data
+        except Exception as e:
+            logger.error(f"Error in scan_file_wrapper: {e}")
+            return {}
+
+    def _find_pattern_matches(self, text: str) -> List[Dict[str, Any]]:
+        """Find matches for sensitive information patterns."""
+        pattern_matches = []
+        
+        # First check for AWS and Private Key patterns since they're our primary target
+        priority_patterns = ['AWS', 'PRIVATE_KEY']
+        for key_type in priority_patterns:
+            pattern = SensitiveEntityPatterns.API_KEY_PATTERNS[key_type]
+            try:
+                matches = re.finditer(pattern, text, re.MULTILINE)
+                for match in matches:
+                    matched_text = match.group().strip()
+                    if matched_text:
+                        # For AWS keys, verify the format
+                        if key_type == 'AWS' and not re.match(r'^AKIA[A-Z0-9]{16}$', matched_text):
+                            continue
+                            
+                        pattern_matches.append({
+                            'text': matched_text,
+                            'type': f'API_KEY_{key_type}',
+                            'start_char': match.start(),
+                            'end_char': match.end(),
+                            'confidence': 0.95  # High confidence for exact matches
+                        })
+            except Exception as e:
+                logger.error(f"Error matching pattern {key_type}: {e}")
+                continue
+        
+        # Then check other patterns
+        for key_type, pattern in SensitiveEntityPatterns.API_KEY_PATTERNS.items():
+            if key_type not in priority_patterns:
+                try:
+                    matches = re.finditer(pattern, text, re.MULTILINE)
+                    for match in matches:
+                        matched_text = match.group().strip()
+                        if matched_text:
+                            # Skip if it's just descriptive text
+                            if re.search(r'(?i)^.*(key|token|secret|password|credential|api)s?\s*$', matched_text):
+                                continue
+                                
+                            # Calculate variety score
+                            variety_score = self._calculate_char_variety_score(matched_text)
+                            if variety_score >= 0.3:
+                                pattern_matches.append({
+                                    'text': matched_text,
+                                    'type': f'API_KEY_{key_type}',
+                                    'start_char': match.start(),
+                                    'end_char': match.end(),
+                                    'confidence': 0.95  # High confidence for pattern matches
+                                })
+                except Exception as e:
+                    logger.error(f"Error matching pattern {key_type}: {e}")
+                    continue
+        
+        # Then check other patterns
+        for entity_type, pattern in SensitiveEntityTypes.PATTERNS.items():
+            try:
+                matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE | re.VERBOSE)
+                for match in matches:
+                    matched_text = match.group().strip()
+                    if matched_text:  # Only add non-empty matches
+                        pattern_matches.append({
+                            'text': matched_text,
+                            'type': entity_type,
+                            'start_char': match.start(),
+                            'end_char': match.end(),
+                            'confidence': 1.0  # Pattern matches are certain
+                        })
+            except Exception as e:
+                logger.error(f"Error matching pattern {entity_type}: {e}")
+                continue
+        
+        return pattern_matches
+
+    def _calculate_entropy(self, text: str) -> float:
+        """Calculate Shannon entropy of a string."""
+        if not text or len(text) < 16:  # Ignore very short strings
+            return 0
+        
+        # Get probability of chars
+        char_count = {}
+        for c in text:
+            char_count[c] = char_count.get(c, 0) + 1
+            
+        # Calculate entropy using character frequencies
+        length = len(text)
+        entropy = 0
+        for count in char_count.values():
+            freq = count / length
+            entropy -= freq * math.log2(freq)
+            
+        # Normalize by max possible entropy for the length
+        max_entropy = math.log2(min(len(char_count), length))
+        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
+        
+        return normalized_entropy
+
+    def _calculate_char_variety_score(self, text: str) -> float:
+        """Calculate a score based on character variety and distribution."""
+        if not text or len(text) < 16:  # Ignore very short strings
+            return 0.0
+        
+        # Count different types of characters
+        upper_count = sum(1 for c in text if c.isupper())
+        lower_count = sum(1 for c in text if c.islower())
+        digit_count = sum(1 for c in text if c.isdigit())
+        special_count = sum(1 for c in text if not c.isalnum())
+        
+        # Calculate ratios
+        length = len(text)
+        char_type_counts = [upper_count, lower_count, digit_count, special_count]
+        ratios = [count / length for count in char_type_counts]
+        
+        # Calculate character variety score
+        variety_score = 0.0
+        
+        # Score based on presence of different character types
+        types_present = sum(1 for count in char_type_counts if count > 0)
+        variety_score += types_present * 0.25  # 0.25 points for each character type present
+        
+        # Score based on distribution - prefer more even distribution
+        mean_ratio = sum(ratios) / len(ratios)
+        variance = sum((r - mean_ratio) ** 2 for r in ratios) / len(ratios)
+        distribution_score = 1.0 - min(variance * 4, 1.0)  # Lower variance = better score
+        
+        # Combine scores
+        final_score = (variety_score + distribution_score) / 2
+        
+        # Length bonus for longer strings
+        if length >= 32:
+            final_score *= 1.2
+        elif length >= 24:
+            final_score *= 1.1
+            
+        return min(final_score, 1.0)
+
+    def _score_potential_key(self, text: str, key_type: str = None) -> float:
+        """Score a potential key based on various factors."""
+        if not text or len(text) < 12:  # Reduced minimum length from 16 to 12
+            return 0.0
+            
+        # Skip if text is just describing keys, but be more permissive
+        if re.search(r'(?i)^(key|token|secret|password|credential|api)s?$', text):
+            return 0.0
+            
+        # Calculate base scores
+        entropy_score = self._calculate_entropy(text)
+        variety_score = self._calculate_char_variety_score(text)
+        
+        # Calculate length score - more generous for shorter strings
+        length = len(text)
+        length_score = min((length - 12) / 48, 1.0)  # Adjusted from 16/64 to 12/48
+        
+        # Combine scores with weights - increased entropy weight
+        score = (
+            entropy_score * 0.5 +      # Increased from 0.4 to 0.5
+            variety_score * 0.3 +      # Reduced from 0.4 to 0.3
+            length_score * 0.2         # Length weight unchanged
+        )
+        
+        # Boost score for strings that look like keys
+        if any(c in text for c in '-_.:'):  # Common key separators
+            score *= 1.15  # Increased from 1.1
+            
+        # Boost score for hex-like strings
+        if re.match(r'^[0-9a-fA-F]+$', text) and len(text) >= 24:  # Reduced from 32
+            score *= 1.25  # Increased from 1.2
+            
+        # Boost score for base64-like strings
+        if re.match(r'^[A-Za-z0-9+/]+={0,2}$', text):
+            score *= 1.25  # Increased from 1.2
+
+        # Additional boost for strings containing project/key identifiers
+        if re.search(r'(?i)(proj|key|sk|pk|token)', text):
+            score *= 1.2
+            
+        return min(max(score, 0.0), 1.0)
+
+    def _find_secrets(self, text: str) -> List[Dict[str, Any]]:
+        """Find potential secrets using detect-secrets and custom patterns."""
+        secrets = []
+        
+        # First scan for high-entropy strings
+        try:
+            # Split text into words and potential key strings
+            potential_keys = re.finditer(r'[A-Za-z0-9+/=_\-\.]{16,}', text, re.MULTILINE)
+            
+            for match in potential_keys:
+                secret_text = match.group().strip()
+                if not secret_text:
+                    continue
+                    
+                # Skip if it's just descriptive text
+                if re.search(r'(?i)^.*(key|token|secret|password|credential|api)s?\s*$', secret_text):
+                    continue
+                    
+                # Score the potential key
+                confidence = self._score_potential_key(secret_text)
+                if confidence >= 0.5:  # Higher threshold for raw entropy detection
+                    secrets.append({
+                        'text': secret_text,
+                        'type': 'HIGH_ENTROPY_SECRET',
+                        'start_char': match.start(),
+                        'end_char': match.end(),
+                        'confidence': confidence
+                    })
+        except Exception as e:
+            logger.error(f"Error scanning for high-entropy strings: {e}")
+            
+        # Then use detect-secrets
+        try:
+            logger.info("Starting secret detection with detect-secrets")
+            lines = text.split('\n')
+            
+            # Create a temporary file for detect-secrets instead of StringIO
+            import tempfile
+            import os
+            
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as temp_file:
+                temp_file.write(text)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Scan the temporary file
+                results = self.secrets_scanner.scan_file(temp_file_path)
+                
+                # Process results
+                for filename, secret_list in results.items():
+                    for secret in secret_list:
+                        try:
+                            # Find the line containing this secret
+                            line_start = 0
+                            for i, line in enumerate(lines):
+                                if i == secret.line_number - 1:
+                                    break
+                                line_start += len(line) + 1
+                            
+                            # Calculate positions
+                            start_pos = line_start + secret.line_start
+                            end_pos = line_start + secret.line_end
+                            
+                            # Get the actual secret text
+                            secret_text = text[start_pos:end_pos]
+                            
+                            # Skip if it's just descriptive text about keys
+                            if re.search(r'(?i)^.*(key|token|secret|password|credential|api)s?\s*$', secret_text):
+                                continue
+                            
+                            # Calculate variety score for additional validation
+                            variety_score = self._calculate_char_variety_score(secret_text)
+                            if variety_score < 0.3 and len(secret_text) > 20:  # Skip low-variety long strings
+                                continue
+                            
+                            logger.info(f"Found secret: {secret_text[:10]}... at position {start_pos}-{end_pos}")
+                            
+                            secrets.append({
+                                'text': secret_text,
+                                'type': 'SECRET',
+                                'start_char': start_pos,
+                                'end_char': end_pos,
+                                'confidence': 0.95
+                            })
+                        except Exception as e:
+                            logger.error(f"Error processing secret: {e}")
+                            continue
+            finally:
+                # Clean up the temporary file
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    logger.error(f"Error cleaning up temporary file: {e}")
+            
+            # Add custom API key pattern matching
+            for key_type, pattern in SensitiveEntityPatterns.API_KEY_PATTERNS.items():
+                try:
+                    matches = re.finditer(pattern, text, re.MULTILINE)
+                    for match in matches:
+                        secret_text = match.group().strip()
+                        if secret_text:
+                            # Skip if it's just descriptive text about keys
+                            if re.search(r'(?i)^.*(key|token|secret|password|credential|api)s?\s*$', secret_text):
+                                continue
+                                
+                            confidence = self._score_potential_key(secret_text, key_type)
+                            if confidence >= 0.3:
+                                secrets.append({
+                                    'text': secret_text,
+                                    'type': f'API_KEY_{key_type}',
+                                    'start_char': match.start(),
+                                    'end_char': match.end(),
+                                    'confidence': confidence
+                                })
+                except Exception as e:
+                    logger.error(f"Error matching pattern {key_type}: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error scanning for secrets: {e}")
+            logger.exception(e)
+        
+        logger.info(f"Total secrets found: {len(secrets)}")
+        return secrets
+
+    def process_text(self, text: str) -> List[Dict[str, Any]]:
+        """Process text and extract named entities."""
+        try:
+            if not text or not isinstance(text, str):
+                logger.warning("Invalid input text")
+                return []
+
+            logger.info("Starting text processing")
+            
+            # Get GLiNER predictions
+            gliner_entities = []
+            try:
+                # Process text in smaller chunks with overlap
+                max_length = 512
+                overlap = 100
+
+                text_length = len(text)
+                start_pos = 0
+
+                while start_pos < text_length:
+                    end_pos = min(start_pos + max_length, text_length)
+                    chunk_text = text[start_pos:end_pos]
+
+                    # Extend end_pos to the end of the last word
+                    if end_pos < text_length and not text[end_pos].isspace():
+                        while end_pos > start_pos and not text[end_pos-1].isspace():
+                            end_pos -= 1
+                        chunk_text = text[start_pos:end_pos]
+
+                    chunk_start_char = start_pos
+
+                    logger.debug(f"Processing chunk with GLiNER: {chunk_text[:100]}...")
+                    try:
+                        # Pass the labels to predict_entities
+                        predictions = self.model.predict_entities(chunk_text, labels=self.labels)
+                        logger.debug(f"Raw GLiNER predictions: {predictions}")
+
+                        for prediction in predictions:
+                            try:
+                                entity_text = prediction.get('text', '').strip()
+                                entity_type = prediction.get('type', '')
+                                score = prediction.get('score', 0.3)
+
+                                if not entity_text or not entity_type:
+                                    continue
+
+                                mapped_type = SensitiveEntityTypes.LABEL_MAPPING.get(entity_type, entity_type)
+
+                                # Get positions within the chunk
+                                entity_start_in_chunk = prediction.get('start_char', None)
+                                entity_end_in_chunk = prediction.get('end_char', None)
+
+                                if entity_start_in_chunk is None or entity_end_in_chunk is None:
+                                    # Fallback to finding positions
+                                    entity_start_in_chunk = chunk_text.find(entity_text)
+                                    entity_end_in_chunk = entity_start_in_chunk + len(entity_text)
+                                    if entity_start_in_chunk == -1:
+                                        continue  # Cannot find entity in chunk
+
+                                # Adjust positions to global text
+                                start_char = chunk_start_char + entity_start_in_chunk
+                                end_char = chunk_start_char + entity_end_in_chunk
+
+                                # Validation and confidence adjustment
+                                is_valid = True
+                                confidence_boost = 0.0
+
+                                if entity_type == 'Person' or 'name' in entity_type.lower():
+                                    words = entity_text.split()
+                                    if any(w[0].isupper() for w in words):
+                                        confidence_boost = 0.5
+                                        logger.debug(f"Found person name: {entity_text}")
+                                    else:
+                                        is_valid = False
+
+                                elif entity_type == 'Location' or 'location' in entity_type.lower():
+                                    if entity_text[0].isupper():
+                                        confidence_boost = 0.4
+                                        logger.debug(f"Found location: {entity_text}")
+                                    else:
+                                        is_valid = False
+
+                                elif entity_type in ['Email', 'Phone', 'CreditCard', 'SSN', 'Address', 'JobTitle']:
+                                    confidence_boost = 0.4
+                                    logger.debug(f"Found structured data: {entity_type} - {entity_text}")
+
+                                if is_valid:
+                                    final_confidence = min(score + confidence_boost, 1.0)
+
+                                    gliner_entities.append({
+                                        'text': entity_text,
+                                        'type': mapped_type,
+                                        'start_char': start_char,
+                                        'end_char': end_char,
+                                        'confidence': final_confidence
+                                    })
+                                    logger.debug(f"Added entity: {entity_text} ({mapped_type})")
+                            except Exception as e:
+                                logger.error(f"Error processing GLiNER prediction: {e}")
+                                continue
+                    except Exception as e:
+                        logger.error(f"Error in GLiNER prediction for chunk: {e}")
+                        continue
+
+                    # Move to next chunk with overlap
+                    start_pos = end_pos - overlap if (end_pos - overlap > start_pos) else end_pos
+
+                logger.info(f"GLiNER found {len(gliner_entities)} entities")
+                
+                # Get pattern matches and secrets
+                pattern_entities = self._find_pattern_matches(text)
+                secret_entities = self._find_secrets(text)
+                
+                # Combine all entities
+                all_entities = gliner_entities + pattern_entities + secret_entities
+                
+                # Remove duplicates while preserving order
+                seen = set()
+                unique_entities = []
+                for entity in all_entities:
+                    key = (entity['text'], entity['type'], entity['start_char'])
+                    if key not in seen:
+                        seen.add(key)
+                        # Lower threshold for personal information
+                        threshold = 0.1 if entity['type'] in ['PERSON', 'ORGANIZATION', 'LOCATION', 'JOB_TITLE', 'ADDRESS'] else 0.5
+                        if entity.get('confidence', 0) >= threshold:
+                            unique_entities.append(entity)
+                
+                logger.info(f"Found {len(unique_entities)} unique entities")
+                return unique_entities
+
+            except Exception as e:
+                logger.error(f"Error in GLiNER processing: {e}")
+                logger.exception(e)
+                return []
+            
+        except Exception as e:
+            logger.error(f"Error in process_text: {e}")
+            logger.exception(e)
+            return []
+
+    def get_sensitive_entities(self, text: str) -> List[Dict[str, Any]]:
+        """Get potentially sensitive entities from text."""
+        try:
+            # Get pattern matches first (these are high confidence)
+            pattern_matches = self._find_pattern_matches(text)
+            
+            # Get secrets from detect-secrets and custom patterns
+            secrets = self._find_secrets(text)
+            
+            # Combine and deduplicate results
+            entities = pattern_matches + secrets
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_entities = []
+            for entity in entities:
+                key = (entity['text'], entity['type'], entity['start_char'])
+                if key not in seen:
+                    seen.add(key)
+                    # Only include entities with sufficient confidence
+                    if entity.get('confidence', 0) >= 0.1:  # Lower threshold for more sensitivity
+                        unique_entities.append(entity)
+            
+            logger.info(f"Found {len(unique_entities)} sensitive entities")
+            return unique_entities
+            
+        except Exception as e:
+            logger.error(f"Error getting sensitive entities: {e}")
+            logger.exception(e)
+            return []
+
+    def get_entity_positions(self, text: str) -> List[Dict[str, Any]]:
+        """Get positions of entities in text.
+        
+        Args:
+            text: Text to process
+            
+        Returns:
+            List[Dict[str, Any]]: List of entities with position information
+        """
+        try:
+            # All entities from process_text already have position information
+            return self.process_text(text)
+            
+        except Exception as e:
+            logger.error(f"Error getting entity positions: {e}")
+            return [] 
