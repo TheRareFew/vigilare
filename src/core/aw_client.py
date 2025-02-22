@@ -130,4 +130,70 @@ class ActivityWatchClient:
         try:
             self.client.disconnect()
         except Exception as e:
-            logger.error(f"Error closing ActivityWatch client: {e}") 
+            logger.error(f"Error closing ActivityWatch client: {e}")
+
+    def get_input_activity(self, lookback_seconds: int = 60) -> Dict[str, int]:
+        """Get input activity metrics for the last N seconds.
+        
+        Args:
+            lookback_seconds: Number of seconds to look back for activity
+            
+        Returns:
+            Dict with activity metrics (presses, clicks, deltaX, deltaY, scrollX, scrollY)
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            start = now - timedelta(seconds=lookback_seconds)
+            timeperiods = [(start, now)]
+
+            # Query input events
+            query = """
+                events = flood(query_bucket(find_bucket("aw-watcher-input_")));
+                RETURN = events;
+            """
+            
+            logger.debug(f"Getting input activity from {start} to {now}")
+            results = self.client.query(query, timeperiods)
+            
+            # Initialize metrics
+            metrics = {
+                "presses": 0,
+                "clicks": 0,
+                "deltaX": 0,
+                "deltaY": 0,
+                "scrollX": 0,
+                "scrollY": 0
+            }
+            
+            # Sum up all input events
+            event_count = 0
+            if results and results[0]:
+                event_count = len(results[0])
+                for event in results[0]:
+                    data = event.get("data", {})
+                    metrics["presses"] += data.get("presses", 0)
+                    metrics["clicks"] += data.get("clicks", 0)
+                    metrics["deltaX"] += abs(data.get("deltaX", 0))
+                    metrics["deltaY"] += abs(data.get("deltaY", 0))
+                    metrics["scrollX"] += abs(data.get("scrollX", 0))
+                    metrics["scrollY"] += abs(data.get("scrollY", 0))
+            
+            total_movement = metrics["deltaX"] + metrics["deltaY"]
+            total_scroll = metrics["scrollX"] + metrics["scrollY"]
+            
+            logger.info(
+                f"Activity metrics for past {lookback_seconds}s: "
+                f"{event_count} events, "
+                f"{metrics['presses']} keypresses, "
+                f"{metrics['clicks']} clicks, "
+                f"{total_movement}px mouse movement, "
+                f"{total_scroll}px scroll"
+            )
+            return metrics
+            
+        except Exception as e:
+            if "bucket" in str(e).lower() and "not found" in str(e).lower():
+                logger.warning("Input watcher not running - no input events available")
+                return {k: 0 for k in ["presses", "clicks", "deltaX", "deltaY", "scrollX", "scrollY"]}
+            logger.error(f"Error getting input activity: {e}")
+            return {k: 0 for k in ["presses", "clicks", "deltaX", "deltaY", "scrollX", "scrollY"]} 

@@ -4,10 +4,26 @@ aw_client_id: "vigilare"
 
 # Screenshot Configuration
 screenshot:
-  min_interval: 60  # Minimum seconds between captures
-  max_interval: 120 # Maximum seconds between captures
+  min_interval: 60  # Minimum seconds between captures (used for high activity)
+  max_interval: 120 # Maximum seconds between captures (used for low activity)
   quality: 75      # JPEG quality (0-100)
   blur_sensitive: true
+  
+  # Activity monitoring configuration
+  activity:
+    check_interval: 10  # How often to check for activity changes (seconds)
+    lookback_window: 60 # How far back to look for activity metrics (seconds)
+  
+  # Activity thresholds for determining screenshot timing
+  activity_thresholds:
+    high:
+      presses: 20    # More than 20 keypresses
+      clicks: 10     # More than 10 clicks
+      movement: 500  # More than 500 pixels of mouse movement
+    medium:
+      presses: 10    # 10-20 keypresses
+      clicks: 5      # 5-10 clicks
+      movement: 200  # 200-500 pixels of mouse movement
 
 # Vision Processing
 vision:
