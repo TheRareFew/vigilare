@@ -24,7 +24,7 @@ from src.core.database import init_database, get_database
 from src.core.config import setup_openai_key
 
 logger = logging.getLogger('vigilare')
-aw_modules = ["aw-watcher-afk", "aw-watcher-window"]  # Removed aw-core as it's not an executable module
+aw_modules = ["aw-watcher-afk", "aw-watcher-window", "aw-watcher-input"]  # Removed aw-core as it's not an executable module
 
 # Global list to track all module processes
 module_processes = []
