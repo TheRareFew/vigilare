@@ -37,8 +37,8 @@ class Daemon:
         try:
             while True:
                 # Check if user is active
-                #is_active = self.aw_client.is_user_active()
-                is_active = True
+                is_active = self.aw_client.is_user_active()
+                #is_active = True
                 logger.debug(f"User active status: {is_active}")
                 
                 if is_active:

@@ -118,6 +118,11 @@ class ScreenCapture:
                 logger.debug("Loading image for analysis")
                 image = Image.open(image_path)
                 
+                # Get OCR text first
+                ocr_text = self.image_analyzer.ocr.get_text_only(image)
+                screenshot.ocr_text = ocr_text
+                logger.debug(f"Extracted OCR text: {ocr_text[:200]}...")
+                
                 # Analyze image with context
                 logger.debug("Starting image analysis")
                 analysis = self.image_analyzer.analyze_image(
@@ -128,8 +133,8 @@ class ScreenCapture:
                 # Update screenshot with analysis results
                 if analysis:
                     logger.debug("Processing analysis results")
-                    # Store full analysis summary
-                    screenshot.image_summary = analysis.get('full_analysis', '')
+                    # Store image summary
+                    screenshot.image_summary = analysis.get('image_summary', '')
                     
                     # Store code insights if present
                     if 'code_insights' in analysis:

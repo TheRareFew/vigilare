@@ -16,10 +16,10 @@ from src.vision.ocr import OCRProcessor
 logger = logging.getLogger(__name__)
 
 class ImageAnalyzer:
-    """Analyzes screenshots using GPT-4o-mini Vision."""
+    """Analyzes screenshots using GPT-4o-mini."""
     
     def __init__(self, model_name: str = "gpt-4o-mini",
-                 temperature: float = 0, max_tokens: int = 4096,
+                 temperature: float = 0, max_tokens: int = 6900,
                  api_key: Optional[str] = None):
         """Initialize image analyzer.
         
@@ -190,7 +190,7 @@ Return a JSON object with these fields:
             "confidence": "A float between 0 and 1 indicating confidence in prompt detection"
         }
     ],
-    "image_summary": "Detailed summary of the user's work context and activities, including their current task or project focus, any challenges, tools and applications being used, interaction patterns, apparent workflow stages, and other relevant insights.",
+    "image_summary": "Detailed summary of the user's work context and activities, including their current task or project focus, any challenges, tools and applications being used, interaction patterns, apparent workflow stages, and other relevant insights. Be extremely specific, detailed, and thorough.",
     "code_insights": {}
 }
 """
@@ -211,7 +211,7 @@ Return a JSON object with these fields:
                 "        {\n"
                 '            "prompt_text": "string - the extracted LLM prompt",\n'
                 '            "prompt_type": "string - programming/research/documentation/other",\n'
-                '            "model_name": "string - GPT-4/GPT-3.5/Claude-3/etc or null if unknown",\n'
+                '            "model_name": "string - GPT-4/GPT-3.5/Claude/etc or null if unknown",\n'
                 '            "llm_tool_used": "string - Cursor/ChatGPT/Claude.ai/etc or null if unknown",\n'
                 '            "confidence": "number - float between 0 and 1"\n'
                 "        }\n"
@@ -220,10 +220,10 @@ Return a JSON object with these fields:
                 '    "code_insights": {}\n'
                 "}\n\n"
                 "Key points to analyze:\n"
-                "- Text input areas and chat interfaces\n"
+                "- Text input areas and chat interfaces; 'Ask agent to do anything' is not a prompt\n"
                 "- Code editors with LLM integrations\n"
                 "- Web-based and desktop LLM interfaces\n"
-                "- Common LLMs: GPT-4, GPT-3.5, Claude-3, Claude-2, Gemini, Llama 2, Mixtral, DeepSeek, Grok\n"
+                "- Common LLMs: GPT-4, GPT-3.5, Claude-3.5-sonnet, Claude-2, Gemini, Llama 2, Mixtral, DeepSeek, Grok\n"
                 "- Common interfaces: ChatGPT, Claude.ai, Perplexity, Poe, Cursor, Gemini, DeepSeek Chat, Grok.x\n\n"
                 "If no prompts are found, return an empty prompts array. Never include explanatory text outside the JSON structure."
             )
