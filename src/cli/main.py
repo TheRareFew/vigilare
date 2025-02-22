@@ -63,13 +63,14 @@ def start_aw_modules():
                     universal_newlines=True
                 )
                 
-                # Create and start output thread
-                import threading
-                output_thread = threading.Thread(
-                    target=create_output_reader(process, module),
-                    name=f"{module}-output-reader"
-                )
-                output_thread.start()
+                # Create and start output thread only for non-input watchers
+                if module != "aw-watcher-input":
+                    import threading
+                    output_thread = threading.Thread(
+                        target=create_output_reader(process, module),
+                        name=f"{module}-output-reader"
+                    )
+                    output_thread.start()
                 
                 # Wait a bit to check if process dies immediately
                 time.sleep(1)

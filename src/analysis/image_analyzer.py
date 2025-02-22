@@ -5,15 +5,90 @@ import io
 import json
 import logging
 import os
-from typing import Dict, Any, Optional
+import atexit
+from typing import Dict, Any, Optional, List
 
 from langchain_openai import ChatOpenAI
+from langchain.output_parsers import PydanticOutputParser
+from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
+from langchain.chains import LLMChain
+from langchain.callbacks.tracers.langchain import LangChainTracer
+from langchain.callbacks.manager import CallbackManager
+from pydantic import BaseModel, Field
 from openai import OpenAI
 from PIL import Image
 from src.storage.models import ScreenshotModel
 from src.vision.ocr import OCRProcessor
+from src.core.config import setup_environment
 
+# Set up logging
 logger = logging.getLogger(__name__)
+
+def setup_logger():
+    """Setup module logger with proper handlers and cleanup."""
+    logger.setLevel(logging.INFO)
+    
+    # Remove any existing handlers to avoid duplicates
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Add console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # Register cleanup
+    def cleanup():
+        for handler in logger.handlers[:]:
+            handler.close()
+            logger.removeHandler(handler)
+    
+    atexit.register(cleanup)
+
+setup_logger()
+
+class CodeAnalysisOutput(BaseModel):
+    """Schema for code analysis output."""
+    languages: List[str] = Field(description="List of programming languages")
+    key_components: List[str] = Field(description="List of important functions/classes")
+    complexity: Dict[str, str] = Field(description="Complexity assessment with level and explanation")
+    potential_issues: List[str] = Field(description="List of potential problems")
+    best_practices: Dict[str, List[str]] = Field(description="Best practices followed and violations")
+    dependencies: List[str] = Field(description="List of identified dependencies")
+    purpose: str = Field(description="Brief description of code purpose")
+    confidence: float = Field(description="Confidence in analysis (0-1)")
+
+    class Config:
+        extra = 'allow'
+
+    def __init__(self, **data):
+        logger.debug(f"Initializing CodeAnalysisOutput with data: {json.dumps(data, indent=2)}")
+        try:
+            super().__init__(**data)
+            logger.debug("Successfully initialized CodeAnalysisOutput")
+        except Exception as e:
+            logger.error(f"Error initializing CodeAnalysisOutput: {str(e)}")
+            raise
+
+class ImageAnalysisOutput(BaseModel):
+    """Schema for image analysis output."""
+    prompts: List[Dict[str, Any]] = Field(description="List of detected LLM prompts")
+    image_summary: str = Field(description="Detailed summary of user context and activities")
+    code_insights: Dict[str, Any] = Field(description="Code analysis results if code is detected")
+
+    class Config:
+        extra = 'allow'
+
+    def __init__(self, **data):
+        logger.debug(f"Initializing ImageAnalysisOutput with data: {json.dumps(data, indent=2)}")
+        try:
+            super().__init__(**data)
+            logger.debug("Successfully initialized ImageAnalysisOutput")
+        except Exception as e:
+            logger.error(f"Error initializing ImageAnalysisOutput: {str(e)}")
+            raise
 
 class ImageAnalyzer:
     """Analyzes screenshots using GPT-4o-mini."""
@@ -21,33 +96,117 @@ class ImageAnalyzer:
     def __init__(self, model_name: str = "gpt-4o-mini",
                  temperature: float = 0, max_tokens: int = 6900,
                  api_key: Optional[str] = None):
-        """Initialize image analyzer.
-        
-        Args:
-            model_name: Name of the GPT-4o-mini model
-            temperature: Model temperature (0-1). Set to 0 for consistent, deterministic responses
-            max_tokens: Maximum tokens for response. Set to 4096 to allow for detailed analysis
-            api_key: OpenAI API key. If None, will try to get from OPENAI_API_KEY environment variable
-        """
-        # Get API key from parameter or environment variable
-        self.api_key = api_key or os.getenv('OPENAI_API_KEY')
-        if not self.api_key:
-            raise ValueError(
-                "OpenAI API key must be provided either through api_key parameter "
-                "or OPENAI_API_KEY environment variable"
-            )
+        """Initialize image analyzer."""
+        logger.debug("Initializing ImageAnalyzer")
+        try:
+            # Setup environment variables
+            setup_environment()
+            
+            # Use the configured OpenAI key
+            self.api_key = api_key or os.getenv('OPENAI_API_KEY')
+            if not self.api_key:
+                raise ValueError("OpenAI API key not found in environment")
 
-        self.model_name = model_name
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.openai_client = OpenAI(api_key=self.api_key)
-        self.code_analyzer = ChatOpenAI(
-            model="gpt-3.5-turbo",
-            temperature=0,
-            api_key=self.api_key
+            # Setup LangSmith tracing
+            logger.debug("Setting up LangSmith tracing")
+            try:
+                tracer = LangChainTracer()
+                callback_manager = CallbackManager([tracer])
+            except Exception as e:
+                logger.error(f"Failed to initialize LangChain tracer: {str(e)}", exc_info=True)
+                tracer = None
+                callback_manager = None
+
+            self.model_name = model_name
+            self.temperature = temperature
+            self.max_tokens = max_tokens
+            self.openai_client = OpenAI(api_key=self.api_key)
+            
+            logger.debug("Initializing LangChain models")
+            # Initialize LangChain models with tracing
+            self.code_analyzer = ChatOpenAI(
+                model="gpt-3.5-turbo",
+                temperature=0,
+                api_key=self.api_key,
+                callbacks=[tracer] if tracer else None
+            )
+            
+            self.image_analyzer_llm = ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                api_key=self.api_key,
+                callbacks=[tracer] if tracer else None
+            )
+            
+            logger.debug("Creating output parsers")
+            # Initialize output parsers
+            try:
+                logger.debug("Creating code parser")
+                self.code_parser = PydanticOutputParser(pydantic_object=CodeAnalysisOutput)
+                logger.debug("Successfully created code parser")
+            except Exception as e:
+                logger.error(f"Error creating code parser: {str(e)}", exc_info=True)
+                raise
+                
+            try:
+                logger.debug("Creating image parser")
+                self.image_parser = PydanticOutputParser(pydantic_object=ImageAnalysisOutput)
+                logger.debug("Successfully created image parser")
+            except Exception as e:
+                logger.error(f"Error creating image parser: {str(e)}", exc_info=True)
+                raise
+            
+            # Setup chains
+            logger.debug("Setting up LangChain chains")
+            self._setup_chains()
+            
+            self.ocr = OCRProcessor()
+            logger.info(f"Successfully initialized image analyzer with model: {model_name}")
+            
+        except Exception as e:
+            logger.error(f"Error during ImageAnalyzer initialization: {str(e)}", exc_info=True)
+            raise
+
+    def _setup_chains(self):
+        """Setup LangChain chains for analysis."""
+        # Code analysis chain
+        code_system_template = """You are an expert code analyzer. Analyze the provided code snippet and extract structured information.
+{format_instructions}"""
+        
+        code_prompt = ChatPromptTemplate(
+            messages=[
+                SystemMessagePromptTemplate.from_template(code_system_template),
+                HumanMessagePromptTemplate.from_template("Analyze this code:\n\n{code}")
+            ]
         )
-        self.ocr = OCRProcessor()
-        logger.info(f"Initialized image analyzer with model: {model_name}")
+        
+        self.code_chain = LLMChain(
+            llm=self.code_analyzer,
+            prompt=code_prompt,
+            output_parser=self.code_parser,
+            verbose=True,
+            tags=["code-analysis"]
+        )
+        
+        # Image analysis chain
+        image_system_template = """You are a system that analyzes screen content and OCR text to identify LLM interactions.
+{format_instructions}"""
+        
+        image_prompt = ChatPromptTemplate(
+            messages=[
+                SystemMessagePromptTemplate.from_template(image_system_template),
+                HumanMessagePromptTemplate.from_template("Analyze this content:\n\nImage: {image_data}\n\nOCR Text:\n{content}")
+            ]
+        )
+        
+        self.image_chain = LLMChain(
+            llm=self.image_analyzer_llm,
+            prompt=image_prompt,
+            output_parser=self.image_parser,
+            verbose=True,
+            tags=["image-analysis"]
+        )
 
     def _encode_image(self, image: Image.Image) -> str:
         """Encode image to base64 string.
@@ -76,92 +235,34 @@ class ImageAnalyzer:
             Dict[str, Any]: Code analysis results
         """
         try:
-            # Prepare system message for code analysis
-            system_message = """You are an expert code analyzer. Analyze the provided code snippet and extract:
-1. Programming languages used
-2. Key functions and classes
-3. Code complexity assessment
-4. Potential bugs or issues
-5. Best practices adherence
-6. Dependencies and imports
-7. Code purpose and functionality
-
-Return a JSON object with these fields:
-{
-    "languages": ["list of programming languages"],
-    "key_components": ["list of important functions/classes"],
-    "complexity": {
-        "level": "low/medium/high",
-        "explanation": "brief explanation"
-    },
-    "potential_issues": ["list of potential problems"],
-    "best_practices": {
-        "followed": ["list of followed practices"],
-        "violations": ["list of violations"]
-    },
-    "dependencies": ["list of identified dependencies"],
-    "purpose": "brief description of code purpose",
-    "confidence": float  # 0-1 indicating confidence in analysis
-}"""
-
-            # Get code analysis from GPT-3.5-turbo
-            messages = [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": f"Analyze this code:\n\n{text}"}
-            ]
-            
-            response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=messages,
-                temperature=0,
-                max_tokens=4096
+            # Run analysis through LangChain
+            result = self.code_chain.run(
+                code=text,
+                format_instructions=self.code_parser.get_format_instructions()
             )
-            
-            try:
-                analysis = json.loads(response.choices[0].message.content)
-                logger.debug("Successfully analyzed code content")
-                return analysis
-            except json.JSONDecodeError as e:
-                logger.error(f"Error parsing code analysis response: {e}")
-                return {
-                    "languages": [],
-                    "key_components": [],
-                    "complexity": {"level": "unknown", "explanation": "Analysis failed"},
-                    "potential_issues": [],
-                    "best_practices": {"followed": [], "violations": []},
-                    "dependencies": [],
-                    "purpose": "Analysis failed",
-                    "confidence": 0.0
-                }
+            logger.debug("Successfully analyzed code content")
+            return result.dict()
                 
         except Exception as e:
             logger.error(f"Error analyzing code: {e}")
-            return {
-                "languages": [],
-                "key_components": [],
-                "complexity": {"level": "unknown", "explanation": "Analysis failed"},
-                "potential_issues": [],
-                "best_practices": {"followed": [], "violations": []},
-                "dependencies": [],
-                "purpose": f"Error: {str(e)}",
-                "confidence": 0.0
-            }
+            return CodeAnalysisOutput(
+                languages=[],
+                key_components=[],
+                complexity={"level": "unknown", "explanation": f"Error: {str(e)}"},
+                potential_issues=[],
+                best_practices={"followed": [], "violations": []},
+                dependencies=[],
+                purpose=f"Error: {str(e)}",
+                confidence=0.0
+            ).dict()
 
     def analyze_image(self, image: Image.Image,
                      context: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        """Analyze an image and extract information.
-        
-        Args:
-            image: PIL Image to analyze
-            context: Optional context information (app name, window title)
-            
-        Returns:
-            Dict[str, Any]: Analysis results
-        """
+        """Analyze an image and extract information."""
         try:
-            # Get OCR text to provide additional context
+            # Get OCR text
             ocr_text = self.ocr.get_text_only(image)
-            logger.debug(f"OCR Text extracted:\n{ocr_text[:500]}...")  # Log first 500 chars of OCR text
+            logger.debug(f"OCR Text extracted:\n{ocr_text[:500]}...")
             
             # Analyze code if code-like content is detected
             code_analysis = None
@@ -170,7 +271,6 @@ Return a JSON object with these fields:
                 "public class", "const ", "var ", "let ", "fn ", "func "
             ]
             
-            # Check for code-like content
             if ocr_text and any(indicator in ocr_text for indicator in code_indicators):
                 logger.debug("Code-like content detected, initiating code analysis")
                 code_analysis = self._analyze_code(ocr_text)
@@ -178,132 +278,76 @@ Return a JSON object with these fields:
             else:
                 logger.debug("No code-like content detected")
             
-            # Prepare the structured format for response
-            structured_format = """
-{
-    "prompts": [
-        {
-            "prompt_text": "The extracted LLM prompt",
-            "prompt_type": "programming, research, documentation, or other",
-            "model_name": "The LLM Model used, if known (e.g., GPT-4, GPT-3.5, Claude-3, etc.)",
-            "llm_tool_used": "Cursor, ChatGPT, Claude.ai, etc., or None",
-            "confidence": "A float between 0 and 1 indicating confidence in prompt detection"
-        }
-    ],
-    "image_summary": "Detailed summary of the user's work context and activities, including their current task or project focus, any challenges, tools and applications being used, interaction patterns, apparent workflow stages, and other relevant insights. Be extremely specific, detailed, and thorough.",
-    "code_insights": {}
-}
-"""
+            # Encode image to base64
+            base64_image = self._encode_image(image)
             
-            # Combine OCR text and code analysis into the context
-            additional_context = ""
-            if ocr_text:
-                additional_context += f"OCR Text from image:\n{ocr_text}\n\n"
-            if code_analysis:
-                additional_context += f"Code Analysis:\n{json.dumps(code_analysis, indent=2)}\n\n"
+            # Prepare system message with format instructions
+            system_message = {
+                "role": "system",
+                "content": "You are a system that analyzes screen content to identify LLM interactions. " + 
+                          self.image_parser.get_format_instructions()
+            }
             
-            # Create the system prompt
-            system_prompt = (
-                "You are a JSON-only response system that analyzes screen content and OCR text to identify LLM interactions. "
-                "YOU MUST ONLY RETURN VALID JSON matching this exact structure, with no additional text or explanation:\n\n"
-                "{\n"
-                '    "prompts": [\n'
-                "        {\n"
-                '            "prompt_text": "string - the extracted LLM prompt",\n'
-                '            "prompt_type": "string - programming/research/documentation/other",\n'
-                '            "model_name": "string - GPT-4/GPT-3.5/Claude/etc or null if unknown",\n'
-                '            "llm_tool_used": "string - Cursor/ChatGPT/Claude.ai/etc or null if unknown",\n'
-                '            "confidence": "number - float between 0 and 1"\n'
-                "        }\n"
-                "    ],\n"
-                '    "image_summary": "string - detailed summary of user context and activities",\n'
-                '    "code_insights": {}\n'
-                "}\n\n"
-                "Key points to analyze:\n"
-                "- Text input areas and chat interfaces; 'Ask agent to do anything' is not a prompt\n"
-                "- Code editors with LLM integrations\n"
-                "- Web-based and desktop LLM interfaces\n"
-                "- Common LLMs: GPT-4, GPT-3.5, Claude-3.5-sonnet, Claude-2, Gemini, Llama 2, Mixtral, DeepSeek, Grok\n"
-                "- Common interfaces: ChatGPT, Claude.ai, Perplexity, Poe, Cursor, Gemini, DeepSeek Chat, Grok.x\n\n"
-                "If no prompts are found, return an empty prompts array. Never include explanatory text outside the JSON structure."
-            )
+            # Prepare user message with image and context
+            context_text = f"\nContext: {json.dumps(context)}" if context else ""
+            user_message = {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Analyze this screenshot and identify any LLM interactions, prompts, or relevant activities.{context_text}"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    }
+                ]
+            }
             
-            # Construct the messages for the OpenAI API - single message with all context
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Analyze this content and return ONLY valid JSON:\n\n{additional_context}"}
-            ]
-            
-            # Get OpenAI response
-            logger.info("Sending request to OpenAI API...")
+            # Run analysis through OpenAI client directly
             try:
                 response = self.openai_client.chat.completions.create(
                     model=self.model_name,
-                    messages=messages,
+                    messages=[system_message, user_message],
                     temperature=self.temperature,
                     max_tokens=self.max_tokens
                 )
-                logger.info(f"Received response from OpenAI API. Model: {self.model_name}")
-                logger.info(f"Raw response content: {response.choices[0].message.content}")
-            except Exception as e:
-                logger.error(f"Failed to get response from OpenAI API: {str(e)}")
-                return {
-                    "prompts": [],
-                    "image_summary": f"OpenAI API error: {str(e)}",
-                    "code_insights": code_analysis if code_analysis else {}
-                }
-            
-            # Parse response
-            try:
-                # First try to parse as JSON
-                response_text = response.choices[0].message.content.strip()
-                logger.info("Attempting to parse response as JSON...")
+                
+                # Parse the response
                 try:
-                    analysis = json.loads(response_text)
-                    logger.info("Successfully parsed response as JSON")
-                except json.JSONDecodeError:
-                    # If not valid JSON, wrap the text response in our expected structure
-                    logger.warning("Response was not JSON, wrapping in standard format")
-                    analysis = {
-                        "prompts": [],
-                        "image_summary": response_text,
-                        "code_insights": {}
-                    }
+                    result = self.image_parser.parse(response.choices[0].message.content)
+                except Exception as e:
+                    logger.error(f"Error parsing image analysis response: {e}")
+                    result = ImageAnalysisOutput(
+                        prompts=[],
+                        image_summary=response.choices[0].message.content,
+                        code_insights={}
+                    )
                 
                 # Add code analysis if available
                 if code_analysis:
-                    logger.debug("Adding code analysis to final result")
-                    analysis["code_insights"] = code_analysis
-                else:
-                    logger.debug("No code analysis available to add to result")
+                    result.code_insights = code_analysis
                 
-                # Validate and ensure required fields
-                if "prompts" not in analysis:
-                    analysis["prompts"] = []
-                if "image_summary" not in analysis:
-                    analysis["image_summary"] = "No summary available"
-                if "code_insights" not in analysis:
-                    analysis["code_insights"] = {}
-                
-                logger.debug("Successfully analyzed image")
-                logger.debug(f"Final analysis result: {json.dumps(analysis, indent=2)}")
-                return analysis
+                logger.debug(f"Final analysis result: {json.dumps(result.dict(), indent=2)}")
+                return result.dict()
                 
             except Exception as e:
-                logger.error(f"Error processing OpenAI response: {e}")
-                return {
-                    "prompts": [],
-                    "image_summary": f"Error processing analysis: {str(e)}",
-                    "code_insights": code_analysis if code_analysis else {}
-                }
+                logger.error(f"Error in image analysis: {e}")
+                return ImageAnalysisOutput(
+                    prompts=[],
+                    image_summary=f"Error in analysis: {str(e)}",
+                    code_insights=code_analysis if code_analysis else {}
+                ).dict()
                 
         except Exception as e:
             logger.error(f"Error analyzing image: {str(e)}")
-            return {
-                "prompts": [],
-                "image_summary": f"Error analyzing image: {str(e)}",
-                "code_insights": code_analysis if code_analysis else {}
-            }
+            return ImageAnalysisOutput(
+                prompts=[],
+                image_summary=f"Error analyzing image: {str(e)}",
+                code_insights={}
+            ).dict()
 
     def analyze_screenshot(self, screenshot: ScreenshotModel) -> Dict[str, Any]:
         """Analyze a screenshot from the database.
