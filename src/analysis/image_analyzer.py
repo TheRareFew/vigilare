@@ -23,42 +23,46 @@ from src.core.config import setup_environment
 
 # Set up logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # Enable debug logging
 
-def setup_logger():
-    """Setup module logger with proper handlers and cleanup."""
-    logger.setLevel(logging.INFO)
-    
-    # Remove any existing handlers to avoid duplicates
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    
-    # Add console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    
-    # Register cleanup
-    def cleanup():
-        for handler in logger.handlers[:]:
-            handler.close()
-            logger.removeHandler(handler)
-    
-    atexit.register(cleanup)
+# Create a file handler
+log_file = 'image_analyzer.log'
+file_handler = logging.FileHandler(log_file)
+file_handler.setLevel(logging.DEBUG)
 
-setup_logger()
+# Create a console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+
+# Create a formatter
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
+# Add the handlers to the logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+class ComplexityOutput(BaseModel):
+    """Schema for complexity assessment."""
+    level: str = Field(description="Complexity level (low/medium/high)")
+    explanation: str = Field(description="Brief explanation of complexity assessment")
+
+class BestPracticesOutput(BaseModel):
+    """Schema for best practices assessment."""
+    followed: List[str] = Field(description="List of followed best practices")
+    violations: List[str] = Field(description="List of best practice violations")
 
 class CodeAnalysisOutput(BaseModel):
     """Schema for code analysis output."""
     languages: List[str] = Field(description="List of programming languages")
     key_components: List[str] = Field(description="List of important functions/classes")
-    complexity: Dict[str, str] = Field(description="Complexity assessment with level and explanation")
+    complexity: ComplexityOutput = Field(description="Complexity assessment with level and explanation")
     potential_issues: List[str] = Field(description="List of potential problems")
-    best_practices: Dict[str, List[str]] = Field(description="Best practices followed and violations")
+    best_practices: BestPracticesOutput = Field(description="Best practices followed and violations")
     dependencies: List[str] = Field(description="List of identified dependencies")
     purpose: str = Field(description="Brief description of code purpose")
-    confidence: float = Field(description="Confidence in analysis (0-1)")
+    confidence: float = Field(description="Confidence in analysis (0-1)", ge=0.0, le=1.0)
 
     class Config:
         extra = 'allow'
@@ -72,11 +76,19 @@ class CodeAnalysisOutput(BaseModel):
             logger.error(f"Error initializing CodeAnalysisOutput: {str(e)}")
             raise
 
+class PromptOutput(BaseModel):
+    """Schema for individual prompt output."""
+    prompt_text: str = Field(description="The extracted LLM prompt")
+    prompt_type: str = Field(description="Type of prompt (programming/research/documentation/other)")
+    model_name: str = Field(description="The LLM model used (e.g. GPT-4, Claude-3)")
+    llm_tool_used: str = Field(description="The LLM tool used (e.g. Cursor, ChatGPT, ActivityWatch AI)")
+    confidence: float = Field(description="Confidence in prompt detection (0-1)", ge=0.0, le=1.0)
+
 class ImageAnalysisOutput(BaseModel):
     """Schema for image analysis output."""
-    prompts: List[Dict[str, Any]] = Field(description="List of detected LLM prompts")
-    image_summary: str = Field(description="Detailed summary of user context and activities")
-    code_insights: Dict[str, Any] = Field(description="Code analysis results if code is detected")
+    prompts: List[PromptOutput] = Field(description="List of detected LLM prompts")
+    full_analysis: str = Field(description="Detailed summary of user context, activities, and overall analysis")
+    code_insights: Optional[CodeAnalysisOutput] = Field(description="Code analysis results if code is detected", default=None)
 
     class Config:
         extra = 'allow'
@@ -84,6 +96,17 @@ class ImageAnalysisOutput(BaseModel):
     def __init__(self, **data):
         logger.debug(f"Initializing ImageAnalysisOutput with data: {json.dumps(data, indent=2)}")
         try:
+            # Validate prompt structure
+            if "prompts" in data:
+                for prompt in data["prompts"]:
+                    if not isinstance(prompt, dict):
+                        continue
+                    # Ensure required fields with correct types
+                    prompt["prompt_text"] = str(prompt.get("prompt_text", ""))
+                    prompt["prompt_type"] = str(prompt.get("prompt_type", "other"))
+                    prompt["model_name"] = str(prompt.get("model_name", "unknown"))
+                    prompt["llm_tool_used"] = str(prompt.get("llm_tool_used", "unknown"))
+                    prompt["confidence"] = float(prompt.get("confidence", 0.0))
             super().__init__(**data)
             logger.debug("Successfully initialized ImageAnalysisOutput")
         except Exception as e:
@@ -260,9 +283,12 @@ class ImageAnalyzer:
                      context: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Analyze an image and extract information."""
         try:
+            logger.info("Starting image analysis")
+            
             # Get OCR text
+            logger.debug("Extracting OCR text from image")
             ocr_text = self.ocr.get_text_only(image)
-            logger.debug(f"OCR Text extracted:\n{ocr_text[:500]}...")
+            logger.debug(f"OCR Text extracted (first 500 chars):\n{ocr_text[:500]}...")
             
             # Analyze code if code-like content is detected
             code_analysis = None
@@ -272,16 +298,19 @@ class ImageAnalyzer:
             ]
             
             if ocr_text and any(indicator in ocr_text for indicator in code_indicators):
-                logger.debug("Code-like content detected, initiating code analysis")
+                logger.info("Code-like content detected, initiating code analysis")
                 code_analysis = self._analyze_code(ocr_text)
                 logger.debug(f"Code analysis result: {json.dumps(code_analysis, indent=2)}")
             else:
-                logger.debug("No code-like content detected")
+                logger.info("No code-like content detected")
             
             # Encode image to base64
+            logger.debug("Encoding image to base64")
             base64_image = self._encode_image(image)
+            logger.debug("Image successfully encoded to base64")
             
             # Prepare system message with format instructions
+            logger.debug("Preparing messages for OpenAI API")
             system_message = {
                 "role": "system",
                 "content": "You are a system that analyzes screen content to identify LLM interactions. " + 
@@ -306,8 +335,14 @@ class ImageAnalyzer:
                 ]
             }
             
+            logger.info("Making API call to OpenAI")
+            logger.debug(f"Using model: {self.model_name}")
+            logger.debug(f"Temperature: {self.temperature}")
+            logger.debug(f"Max tokens: {self.max_tokens}")
+            
             # Run analysis through OpenAI client directly
             try:
+                logger.debug("Sending request to OpenAI API")
                 response = self.openai_client.chat.completions.create(
                     model=self.model_name,
                     messages=[system_message, user_message],
@@ -315,38 +350,44 @@ class ImageAnalyzer:
                     max_tokens=self.max_tokens
                 )
                 
+                logger.info("Received response from OpenAI")
+                logger.debug(f"Raw API response: {response}")
+                
                 # Parse the response
                 try:
+                    logger.debug("Parsing API response")
                     result = self.image_parser.parse(response.choices[0].message.content)
+                    logger.info("Successfully parsed API response")
                 except Exception as e:
-                    logger.error(f"Error parsing image analysis response: {e}")
+                    logger.error(f"Error parsing image analysis response: {e}", exc_info=True)
                     result = ImageAnalysisOutput(
                         prompts=[],
-                        image_summary=response.choices[0].message.content,
-                        code_insights={}
+                        full_analysis=response.choices[0].message.content,
+                        code_insights=None
                     )
                 
                 # Add code analysis if available
                 if code_analysis:
+                    logger.debug("Adding code analysis to result")
                     result.code_insights = code_analysis
                 
                 logger.debug(f"Final analysis result: {json.dumps(result.dict(), indent=2)}")
                 return result.dict()
                 
             except Exception as e:
-                logger.error(f"Error in image analysis: {e}")
+                logger.error(f"Error in OpenAI API call: {e}", exc_info=True)
                 return ImageAnalysisOutput(
                     prompts=[],
-                    image_summary=f"Error in analysis: {str(e)}",
-                    code_insights=code_analysis if code_analysis else {}
+                    full_analysis=f"Error in analysis: {str(e)}",
+                    code_insights=code_analysis if code_analysis else None
                 ).dict()
                 
         except Exception as e:
-            logger.error(f"Error analyzing image: {str(e)}")
+            logger.error(f"Error in analyze_image: {str(e)}", exc_info=True)
             return ImageAnalysisOutput(
                 prompts=[],
-                image_summary=f"Error analyzing image: {str(e)}",
-                code_insights={}
+                full_analysis=f"Error analyzing image: {str(e)}",
+                code_insights=None
             ).dict()
 
     def analyze_screenshot(self, screenshot: ScreenshotModel) -> Dict[str, Any]:
@@ -366,7 +407,7 @@ class ImageAnalyzer:
             analysis = self.analyze_image(image)
             
             # Update screenshot with analysis
-            screenshot.image_summary = analysis.get('image_summary', '')
+            screenshot.image_summary = analysis.get('full_analysis', '')
             screenshot.save()
             
             return analysis
@@ -375,5 +416,5 @@ class ImageAnalyzer:
             logger.error(f"Error analyzing screenshot: {e}")
             return {
                 "prompts": [],
-                "image_summary": f"Error: {str(e)}"
+                "full_analysis": f"Error: {str(e)}"
             } 

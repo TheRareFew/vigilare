@@ -7,7 +7,8 @@ screenshot:
   min_interval: 60  # Minimum seconds between captures (used for high activity)
   max_interval: 120 # Maximum seconds between captures (used for low activity)
   quality: 75      # JPEG quality (0-100)
-  blur_sensitive: true
+  blur_sensitive: true  # Enable blurring of sensitive information
+  enable_ner: true     # Enable Named Entity Recognition for sensitive info detection
   
   # Activity monitoring configuration
   activity:

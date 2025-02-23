@@ -23,19 +23,22 @@ class Daemon:
         """
         self.config = config
         self.aw_client = aw_client
-        self.screen_capture = ScreenCapture(config['screenshot'], aw_client)
+        
+        # Get screenshot configuration from capture section
+        screenshot_config = config.get('capture', {}).get('screenshot', {})
+        self.screen_capture = ScreenCapture(screenshot_config, aw_client)
         
         # Screenshot intervals
-        self.min_interval = config['screenshot']['min_interval']
-        self.max_interval = config['screenshot']['max_interval']
+        self.min_interval = screenshot_config.get('min_interval', 60)
+        self.max_interval = screenshot_config.get('max_interval', 120)
         
         # Activity monitoring settings
-        activity_config = config['screenshot'].get('activity', {})
+        activity_config = screenshot_config.get('activity', {})
         self.check_interval = activity_config.get('check_interval', 10)
         self.lookback_window = activity_config.get('lookback_window', 60)
         
         # Activity thresholds from config
-        self.activity_thresholds = config['screenshot'].get('activity_thresholds', {
+        self.activity_thresholds = screenshot_config.get('activity_thresholds', {
             'high': {
                 'presses': 20,    # More than 20 keypresses
                 'clicks': 10,     # More than 10 clicks
@@ -55,11 +58,11 @@ class Daemon:
         # Log the thresholds being used
         logger.info("Using activity thresholds:")
         for level, thresholds in self.activity_thresholds.items():
-            logger.info(f"  {level}: {thresholds}")
-        
+            logger.info(f"{level.upper()}: {thresholds}")
+            
+        logger.info(f"Screenshot intervals: min={self.min_interval}s, max={self.max_interval}s")
         logger.info(f"Activity check interval: {self.check_interval}s")
         logger.info(f"Activity lookback window: {self.lookback_window}s")
-        logger.info("Initialized daemon process")
 
     def _get_activity_level(self) -> str:
         """Determine activity level based on input metrics.
@@ -146,15 +149,18 @@ class Daemon:
         
         # If no next screenshot time is set, set it
         if self.next_screenshot_time is None:
-            self.next_screenshot_time = now
-            return True
+            self.next_screenshot_time = now + self._get_screenshot_interval(self.current_activity_level)
+            return False
             
         return now >= self.next_screenshot_time
 
     def _update_next_screenshot_time(self):
         """Update the next screenshot time based on current activity level."""
         interval = self._get_screenshot_interval(self.current_activity_level)
-        self.next_screenshot_time = time.time() + interval
+        current_time = time.time()
+        
+        # Always set next screenshot time relative to current time
+        self.next_screenshot_time = current_time + interval
         logger.debug(f"Next screenshot scheduled in {interval:.2f}s")
 
     def start(self):
@@ -168,8 +174,18 @@ class Daemon:
                 logger.debug(f"User active status: {is_active}")
                 
                 if is_active:
+                    # Get previous activity level for comparison
+                    previous_level = self.current_activity_level
+                    
                     # Update activity level
                     self.current_activity_level = self._get_activity_level()
+                    
+                    # If activity increased, update screenshot timing
+                    if (
+                        (previous_level == 'low' and self.current_activity_level in ['medium', 'high']) or
+                        (previous_level == 'medium' and self.current_activity_level == 'high')
+                    ):
+                        self._update_next_screenshot_time()
                     
                     # Check if we should take a screenshot
                     if self._should_take_screenshot():
@@ -186,8 +202,9 @@ class Daemon:
                         if image_path:
                             logger.debug(f"Screenshot captured successfully at: {image_path}")
                             self.screen_capture.store_screenshot(image_path, window_info)
-                            # Update next screenshot time after successful capture
-                            self._update_next_screenshot_time()
+                            # Set next screenshot time after successful capture
+                            self.next_screenshot_time = time.time() + self._get_screenshot_interval(self.current_activity_level)
+                            logger.debug(f"Next screenshot scheduled in {self._get_screenshot_interval(self.current_activity_level):.2f}s")
                         else:
                             logger.warning("Failed to capture screenshot")
                 else:

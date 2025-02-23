@@ -146,9 +146,11 @@ class ActivityWatchClient:
             start = now - timedelta(seconds=lookback_seconds)
             timeperiods = [(start, now)]
 
-            # Query input events
+            # Query input events with proper time window handling
             query = """
                 events = flood(query_bucket(find_bucket("aw-watcher-input_")));
+                events = sort_by_timestamp(events);
+                events = merge_events_by_keys(events, ["presses", "clicks", "deltaX", "deltaY", "scrollX", "scrollY"]);
                 RETURN = events;
             """
             

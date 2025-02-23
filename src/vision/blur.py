@@ -190,17 +190,21 @@ class SensitiveInfoBlur:
             logger.exception(e)
             return image
 
-def process_screenshot(image: Image.Image) -> Image.Image:
+def process_screenshot(image: Image.Image, enable_ner: bool = True) -> Image.Image:
     """Process a screenshot and blur sensitive information.
     
     Args:
         image: PIL Image to process
+        enable_ner: Whether to use NER for sensitive information detection
         
     Returns:
         Image.Image: Processed image with sensitive information blurred
     """
     try:
         processor = SensitiveInfoBlur()
+        if not enable_ner:
+            # If NER is disabled, only use pattern matching and secrets detection
+            processor.ner = None
         return processor.process_image(image)
     except Exception as e:
         logger.error(f"Error processing screenshot: {e}")

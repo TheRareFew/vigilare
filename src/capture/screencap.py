@@ -31,12 +31,13 @@ class ScreenCapture:
         self.config = config
         self.aw_client = aw_client
         self.quality = config.get('quality', 90)  # Reduced default quality
-        self.blur_sensitive = config.get('blur_sensitive', True)
+        self.blur_sensitive = config.get('blur_sensitive', True)  # Control blurring
+        self.enable_ner = config.get('enable_ner', True)  # Control NER
         self.screenshots_dir = config.get('screenshots_dir', str(get_data_dir() / 'screenshots'))
         os.makedirs(self.screenshots_dir, exist_ok=True)
         self.max_dimension = config.get('max_dimension', 1800)  # Max width/height for screenshots
         
-        # Initialize image analyzer
+        # Initialize image analyzer for LLM analysis
         self.image_analyzer = ImageAnalyzer(
             model_name=config.get('analyzer', {}).get('model_name', 'gpt-4o-mini'),
             temperature=config.get('analyzer', {}).get('temperature', 0),
@@ -57,7 +58,6 @@ class ScreenCapture:
             
             # Capture screen
             logger.debug("Capturing screen with ImageGrab")
-            #screenshot = ImageGrab.grab(bbox=None, include_layered_windows=False, all_screens=True)
             screenshot = ImageGrab.grab(bbox=None, include_layered_windows=False)
             logger.debug(f"Initial screenshot size: {screenshot.size}")
             
@@ -76,7 +76,7 @@ class ScreenCapture:
             # Process screenshot if blur is enabled
             if self.blur_sensitive:
                 logger.debug("Processing screenshot with blur")
-                screenshot = process_screenshot(screenshot)
+                screenshot = process_screenshot(screenshot, enable_ner=self.enable_ner)
             
             # Generate path and save
             path = get_screenshot_path(self.screenshots_dir)
@@ -112,16 +112,11 @@ class ScreenCapture:
             )
             logger.debug(f"Created screenshot record with ID: {screenshot.image_id}")
             
-            # Analyze the screenshot
+            # Always analyze the screenshot with LLM, even if NER is disabled
             try:
                 # Load image for analysis
                 logger.debug("Loading image for analysis")
                 image = Image.open(image_path)
-                
-                # Get OCR text first
-                ocr_text = self.image_analyzer.ocr.get_text_only(image)
-                screenshot.ocr_text = ocr_text
-                logger.debug(f"Extracted OCR text: {ocr_text[:200]}...")
                 
                 # Analyze image with context
                 logger.debug("Starting image analysis")
@@ -133,8 +128,8 @@ class ScreenCapture:
                 # Update screenshot with analysis results
                 if analysis:
                     logger.debug("Processing analysis results")
-                    # Store image summary
-                    screenshot.image_summary = analysis.get('image_summary', '')
+                    # Store full_analysis in image_summary field
+                    screenshot.image_summary = analysis.get('full_analysis', '')
                     
                     # Store code insights if present
                     if 'code_insights' in analysis:
@@ -178,15 +173,14 @@ class ScreenCapture:
                                 logger.debug(f"Skipped duplicate prompt: {prompt_text[:50]}...")
                     
                     screenshot.save()
-                
-                logger.debug(f"Analyzed and stored screenshot metadata: {screenshot.image_id}")
+                    logger.debug(f"Analyzed and stored screenshot metadata: {screenshot.image_id}")
                 
             except Exception as e:
-                logger.error(f"Error analyzing screenshot: {e}", exc_info=True)
+                logger.error(f"Error analyzing screenshot: {e}")
                 # Still return the screenshot even if analysis fails
-                
+            
             return screenshot
             
         except Exception as e:
-            logger.error(f"Error storing screenshot metadata: {e}", exc_info=True)
+            logger.error(f"Error storing screenshot metadata: {e}")
             return None 
