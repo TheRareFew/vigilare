@@ -11,6 +11,7 @@ import sys
 import yaml
 import subprocess
 import time
+import threading
 from pathlib import Path
 
 # Add the parent directory to the Python path
@@ -22,12 +23,16 @@ from src.core.daemon import Daemon
 from src.core.aw_client import ActivityWatchClient
 from src.core.database import init_database, get_database
 from src.core.config import setup_openai_key
+from src.api.server import start_server
 
 logger = logging.getLogger('vigilare')
 aw_modules = ["aw-watcher-afk", "aw-watcher-window", "aw-watcher-input"]  # Removed aw-core as it's not an executable module
 
 # Global list to track all module processes
 module_processes = []
+
+# Global thread for API server
+api_server_thread = None
 
 def create_output_reader(process, module_name):
     """Create an output reader thread for a process."""
@@ -174,6 +179,24 @@ def start_aw_server():
         logger.error(f"Error starting ActivityWatch server: {e}")
         return False
 
+def start_api_server():
+    """Start the API server in a separate thread."""
+    global api_server_thread
+    
+    def run_server():
+        logger.info("Starting Vigilare API server...")
+        try:
+            start_server(host='localhost', port=5667)
+        except Exception as e:
+            logger.error(f"Error starting API server: {e}")
+    
+    api_server_thread = threading.Thread(target=run_server, daemon=True)
+    api_server_thread.start()
+    
+    # Give it a moment to start
+    time.sleep(2)
+    logger.info("Vigilare API server started on port 5667")
+
 def cleanup():
     """Cleanup function to handle graceful shutdown."""
     logger = logging.getLogger('vigilare')
@@ -235,7 +258,7 @@ def load_config(config_path):
         def replace_env_vars(obj):
             if isinstance(obj, dict):
                 # Special handling for known path fields
-                if 'path' in obj:
+                if 'path' in obj and 'database' not in obj:  # Skip database paths
                     obj['path'] = os.path.normpath(obj['path'])
                 if 'logging_config' in obj:
                     obj['logging_config'] = os.path.normpath(obj['logging_config'])
@@ -275,15 +298,7 @@ def main():
         os.makedirs(os.path.dirname(log_config_path), exist_ok=True)
         setup_logging(log_config_path, args.debug)
         
-        # Initialize database
-        db_path = os.path.abspath(os.path.join(PROJECT_ROOT, config['database']['path']))
-        # Ensure the database directory exists
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        if not init_database(db_path):
-            logger.error("Failed to initialize database")
-            sys.exit(1)
-        
-        # Start ActivityWatch server in testing mode
+        # Start ActivityWatch server in testing mode first
         if not start_aw_server():
             logger.error("Failed to start ActivityWatch server")
             sys.exit(1)
@@ -297,6 +312,15 @@ def main():
             testing=True,  # Always use testing mode to match server
             server_url=config['aw_server_url']
         )
+        
+        # Now initialize our database using ActivityWatch's database
+        logger.info("Initializing database using ActivityWatch's database...")
+        if not init_database(testing=True):  # Use testing mode to match AW server
+            logger.error("Failed to initialize database")
+            sys.exit(1)
+        
+        # Start our API server
+        start_api_server()
         
         # Initialize and start daemon
         daemon = Daemon(config, aw_client)

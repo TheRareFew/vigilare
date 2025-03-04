@@ -6,7 +6,7 @@ Creates all necessary tables and initializes reference data.
 
 import os
 import sys
-import yaml
+import argparse
 
 # Add the src directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -16,6 +16,7 @@ from src.storage.models import (
     PromptModel, PromptEmbeddingModel, ReportModel,
     ReportEmbeddingModel, AppClassificationModel
 )
+from src.core.database import init_database, close_database
 
 def create_tables():
     """Create all database tables."""
@@ -48,10 +49,23 @@ def initialize_reference_data():
         PromptTypeModel.get_or_create(prompt_type_name=p_type)
         print(f"Created prompt type: {p_type}")
 
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Setup Vigilare database')
+    parser.add_argument('--testing', action='store_true', help='Use testing database')
+    return parser.parse_args()
+
 def main():
     """Main function to set up the database."""
     try:
-        print("Creating database tables...")
+        args = parse_args()
+        
+        print("Initializing database...")
+        if not init_database(testing=args.testing):
+            print("Failed to initialize database")
+            sys.exit(1)
+        
+        print("\nCreating database tables...")
         create_tables()
         
         print("\nInitializing reference data...")
@@ -62,6 +76,8 @@ def main():
     except Exception as e:
         print(f"Error setting up database: {e}")
         sys.exit(1)
+    finally:
+        close_database()
 
 if __name__ == "__main__":
     main() 

@@ -46,14 +46,5 @@ storage:
   vectors_dir: "data/vectors"
   logs_dir: "data/logs"
 
-# Database
-database:
-  path: "data/vigilare.db"
-  pragmas:
-    journal_mode: "wal"
-    cache_size: -32000  # 32MB cache
-    foreign_keys: 1
-    synchronous: 0
-
 # Logging
 logging_config: "config/logging_config.yaml" 

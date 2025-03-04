@@ -7,36 +7,38 @@ from typing import Optional
 from pathlib import Path
 
 from peewee import SqliteDatabase, DatabaseProxy
+from aw_core.dirs import get_data_dir
 
 logger = logging.getLogger(__name__)
 
 # Global database proxy
 database_proxy = DatabaseProxy()
 
-def get_data_dir() -> Path:
-    """Get the root data directory path.
+def get_aw_db_path(testing: bool = False) -> str:
+    """Get the ActivityWatch database path.
     
+    Args:
+        testing: Whether to use testing database
+        
     Returns:
-        Path: Path to the data directory
+        str: Path to the ActivityWatch database
     """
-    # Get the directory where this file is located
-    current_dir = Path(__file__).resolve().parent
-    # Go up to the vigilare root and then to data
-    data_dir = current_dir.parent.parent / 'data'
-    return data_dir
+    data_dir = get_data_dir("aw-server")
+    filename = f"peewee-sqlite{'-testing' if testing else ''}.v2.db"
+    return os.path.join(data_dir, filename)
 
 class DatabaseManager:
     """Manages database connections and initialization."""
     
-    def __init__(self, db_path: str = str(get_data_dir() / "vigilare.db")):
+    def __init__(self, testing: bool = False):
         """Initialize database manager.
         
         Args:
-            db_path: Path to the SQLite database file
+            testing: Whether to use testing database
         """
-        self.db_path = db_path
+        self.db_path = get_aw_db_path(testing)
         self.database = None
-        logger.info(f"Initialized database manager with path: {db_path}")
+        logger.info(f"Initialized database manager with path: {self.db_path}")
     
     def initialize(self) -> bool:
         """Initialize the database.
@@ -123,11 +125,11 @@ class DatabaseManager:
 # Global database manager instance
 _db_manager: Optional[DatabaseManager] = None
 
-def init_database(db_path: str = str(get_data_dir() / "vigilare.db")) -> bool:
+def init_database(testing: bool = False) -> bool:
     """Initialize the database.
     
     Args:
-        db_path: Path to the SQLite database file
+        testing: Whether to use testing database
         
     Returns:
         bool: True if successful, False otherwise
@@ -135,7 +137,7 @@ def init_database(db_path: str = str(get_data_dir() / "vigilare.db")) -> bool:
     global _db_manager
     
     try:
-        _db_manager = DatabaseManager(db_path)
+        _db_manager = DatabaseManager(testing)
         return _db_manager.initialize()
     except Exception as e:
         logger.error(f"Error in init_database: {e}")
