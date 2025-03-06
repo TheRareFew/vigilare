@@ -1,7 +1,6 @@
 """Task and activity analysis."""
 
 import json
-import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -9,8 +8,10 @@ from src.storage.models import (
     ScreenshotModel, PromptModel, ReportModel,
     AppClassificationModel, IntervalTypeModel
 )
+from src.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+# Get the application logger
+logger = get_logger(__name__)
 
 class TaskAnalyzer:
     """Analyzes user tasks and activities."""
@@ -362,6 +363,17 @@ class TaskAnalyzer:
     
     def generate_report(self, start_time: datetime,
                        end_time: datetime,
+                       interval_type: str = 'daily') -> Dict[str, Any]:
+        """Generate a report for the specified time period.
+        
+        Args:
+            start_time: Start of the period
+            end_time: End of the period
+            interval_type: Type of interval (hourly/daily/weekly/monthly)
+            
+        Returns:
+            Dict[str, Any]: Generated report
+        """
         if interval_type == 'hourly':
             start_time = end_time - timedelta(hours=1)
         elif interval_type == 'daily':

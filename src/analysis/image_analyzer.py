@@ -3,8 +3,8 @@
 import base64
 import io
 import json
-import logging
 import os
+import re
 import atexit
 from typing import Dict, Any, Optional, List
 
@@ -20,28 +20,10 @@ from PIL import Image
 from src.storage.models import ScreenshotModel
 from src.core.config import setup_environment
 from src.core.aw_client import ActivityWatchClient
+from src.utils.logger import get_logger
 
-# Set up logging
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Enable debug logging
-
-# Create a file handler
-log_file = 'image_analyzer.log'
-file_handler = logging.FileHandler(log_file)
-file_handler.setLevel(logging.DEBUG)
-
-# Create a console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-
-# Create a formatter
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-console_handler.setFormatter(formatter)
-
-# Add the handlers to the logger
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
+# Get the application logger
+logger = get_logger(__name__)
 
 class ComplexityOutput(BaseModel):
     """Schema for complexity assessment."""
@@ -98,15 +80,23 @@ class ImageAnalysisOutput(BaseModel):
         try:
             # Validate prompt structure
             if "prompts" in data:
+                # Filter out non-dictionary entries
+                filtered_prompts = []
                 for prompt in data["prompts"]:
-                    if not isinstance(prompt, dict):
-                        continue
-                    # Ensure required fields with correct types
-                    prompt["prompt_text"] = str(prompt.get("prompt_text", ""))
-                    prompt["prompt_type"] = str(prompt.get("prompt_type", "other"))
-                    prompt["model_name"] = str(prompt.get("model_name", "unknown"))
-                    prompt["llm_tool_used"] = str(prompt.get("llm_tool_used", "unknown"))
-                    prompt["confidence"] = float(prompt.get("confidence", 0.0))
+                    if isinstance(prompt, dict):
+                        # Ensure required fields with correct types
+                        prompt["prompt_text"] = str(prompt.get("prompt_text", ""))
+                        prompt["prompt_type"] = str(prompt.get("prompt_type", "other"))
+                        prompt["model_name"] = str(prompt.get("model_name", "unknown"))
+                        prompt["llm_tool_used"] = str(prompt.get("llm_tool_used", "unknown"))
+                        prompt["confidence"] = float(prompt.get("confidence", 0.0))
+                        filtered_prompts.append(prompt)
+                    else:
+                        logger.warning(f"Skipping invalid prompt entry: {prompt}")
+                
+                # Replace with filtered prompts
+                data["prompts"] = filtered_prompts
+                
             super().__init__(**data)
             logger.debug("Successfully initialized ImageAnalysisOutput")
         except Exception as e:
@@ -406,7 +396,19 @@ However, you should still analyze the full image content for the 'full_analysis'
                 # Parse the response
                 try:
                     logger.debug("Parsing API response")
-                    result = self.image_parser.parse(response.choices[0].message.content)
+                    content = response.choices[0].message.content
+                    
+                    # Add additional validation before parsing
+                    try:
+                        # Try to extract JSON from the response if it's not properly formatted
+                        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', content)
+                        if json_match:
+                            logger.info("Found JSON in code block, extracting it")
+                            content = json_match.group(1).strip()
+                    except Exception as e:
+                        logger.warning(f"Error extracting JSON from response: {e}")
+                    
+                    result = self.image_parser.parse(content)
                     logger.info("Successfully parsed API response")
                     
                     # Convert to dict to avoid JSON serialization issues
@@ -422,9 +424,28 @@ However, you should still analyze the full image content for the 'full_analysis'
                     
                 except Exception as e:
                     logger.error(f"Error parsing image analysis response: {e}", exc_info=True)
+                    # Create a safe fallback response
+                    content = response.choices[0].message.content
+                    
+                    # Try to extract any potential prompts using regex
+                    prompts = []
+                    try:
+                        # Look for patterns that might indicate prompts in the text
+                        prompt_matches = re.findall(r'"prompt_text"\s*:\s*"([^"]+)"', content)
+                        for i, match in enumerate(prompt_matches):
+                            prompts.append({
+                                "prompt_text": match,
+                                "prompt_type": "other",
+                                "model_name": "unknown",
+                                "llm_tool_used": "unknown",
+                                "confidence": 0.5
+                            })
+                    except Exception as extract_err:
+                        logger.error(f"Error extracting prompts from response: {extract_err}")
+                    
                     result_dict = {
-                        "prompts": [],
-                        "full_analysis": response.choices[0].message.content,
+                        "prompts": prompts,
+                        "full_analysis": content,
                         "code_insights": code_analysis
                     }
                     return result_dict
