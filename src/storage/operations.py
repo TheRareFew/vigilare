@@ -16,7 +16,8 @@ from peewee import fn, JOIN
 from src.core.database import get_database
 from src.storage.models import (
     ScreenshotModel, PromptModel, PromptTypeModel,
-    ReportModel, AppClassificationModel
+    ReportModel, AppClassificationModel,
+    IntervalTypeModel, CursorProjectModel
 )
 
 logger = logging.getLogger(__name__)
@@ -263,43 +264,111 @@ class DatabaseOperations:
             Dict[str, Any]: Database statistics
         """
         try:
-            stats = {
-                'screenshots': ScreenshotModel.select().count(),
-                'prompts': PromptModel.select().count(),
-                'reports': ReportModel.select().count(),
-                'app_classifications': AppClassificationModel.select().count(),
-                'prompt_types': PromptTypeModel.select().count(),
-                'latest_screenshot': None,
-                'latest_prompt': None,
-                'latest_report': None
+            screenshot_count = ScreenshotModel.select().count()
+            prompt_count = PromptModel.select().count()
+            report_count = ReportModel.select().count()
+            app_classification_count = AppClassificationModel.select().count()
+            cursor_project_count = CursorProjectModel.select().count()
+            
+            return {
+                'screenshot_count': screenshot_count,
+                'prompt_count': prompt_count,
+                'report_count': report_count,
+                'app_classification_count': app_classification_count,
+                'cursor_project_count': cursor_project_count,
+                'database_size_bytes': os.path.getsize(database.db_path) if hasattr(database, 'db_path') else 0
             }
-            
-            # Get latest entries
-            latest_screenshot = (ScreenshotModel
-                .select()
-                .order_by(ScreenshotModel.timestamp.desc())
-                .first())
-            if latest_screenshot:
-                stats['latest_screenshot'] = latest_screenshot.timestamp.isoformat()
-            
-            latest_prompt = (PromptModel
-                .select()
-                .order_by(PromptModel.timestamp.desc())
-                .first())
-            if latest_prompt:
-                stats['latest_prompt'] = latest_prompt.timestamp.isoformat()
-            
-            latest_report = (ReportModel
-                .select()
-                .order_by(ReportModel.timestamp.desc())
-                .first())
-            if latest_report:
-                stats['latest_report'] = latest_report.timestamp.isoformat()
-            
-            return stats
-            
         except Exception as e:
             logger.error(f"Error getting database stats: {e}")
             return {
                 'error': str(e)
-            } 
+            }
+
+    def update_cursor_project(self, project_name: str, project_path: str = None) -> bool:
+        """Update or create a Cursor project entry.
+        
+        Args:
+            project_name: Name of the Cursor project
+            project_path: Path to the Cursor project (optional)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Set all projects as inactive first
+            CursorProjectModel.update(is_active=False).execute()
+            
+            # Try to get existing project
+            try:
+                project = CursorProjectModel.get(CursorProjectModel.project_name == project_name)
+                
+                # Update project
+                project.is_active = True
+                project.last_accessed = datetime.now()
+                
+                # Update path if provided
+                if project_path:
+                    project.project_path = project_path
+                    
+                project.save()
+                logger.info(f"Updated Cursor project: {project_name}")
+                
+            except CursorProjectModel.DoesNotExist:
+                # Create new project
+                if not project_path:
+                    # Try to find the path using the workspace storage function
+                    from src.utils.helpers import get_most_recent_workspace_dir
+                    project_path = get_most_recent_workspace_dir()
+                
+                CursorProjectModel.create(
+                    project_name=project_name,
+                    project_path=project_path or "",
+                    is_active=True,
+                    last_accessed=datetime.now()
+                )
+                logger.info(f"Created new Cursor project: {project_name}")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating Cursor project: {e}")
+            return False
+            
+    def get_active_cursor_project(self) -> Optional[Dict[str, Any]]:
+        """Get the active Cursor project.
+        
+        Returns:
+            Optional[Dict[str, Any]]: Active project data or None if not found
+        """
+        try:
+            project = CursorProjectModel.get(CursorProjectModel.is_active == True)
+            return {
+                'project_id': project.project_id,
+                'project_name': project.project_name,
+                'project_path': project.project_path,
+                'last_accessed': project.last_accessed.isoformat()
+            }
+        except CursorProjectModel.DoesNotExist:
+            return None
+        except Exception as e:
+            logger.error(f"Error getting active Cursor project: {e}")
+            return None
+            
+    def get_all_cursor_projects(self) -> List[Dict[str, Any]]:
+        """Get all Cursor projects.
+        
+        Returns:
+            List[Dict[str, Any]]: List of all projects
+        """
+        try:
+            projects = CursorProjectModel.select().order_by(CursorProjectModel.last_accessed.desc())
+            return [{
+                'project_id': p.project_id,
+                'project_name': p.project_name,
+                'project_path': p.project_path,
+                'is_active': p.is_active,
+                'last_accessed': p.last_accessed.isoformat()
+            } for p in projects]
+        except Exception as e:
+            logger.error(f"Error getting all Cursor projects: {e}")
+            return [] 

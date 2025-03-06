@@ -8,21 +8,27 @@ from typing import Dict
 
 from src.capture.screencap import ScreenCapture
 from src.core.aw_client import ActivityWatchClient
+from src.storage.operations import DatabaseOperations
 
 logger = logging.getLogger(__name__)
 
 class Daemon:
-    """Daemon process that runs periodic tasks."""
+    """Main daemon process for Vigilare."""
     
     def __init__(self, config: Dict, aw_client: ActivityWatchClient):
         """Initialize daemon.
         
         Args:
-            config: Application configuration
+            config: Configuration dictionary
             aw_client: ActivityWatch client instance
         """
         self.config = config
         self.aw_client = aw_client
+        self.current_activity_level = 'low'
+        self.next_screenshot_time = 0
+        self.last_cursor_check_time = 0
+        self.cursor_check_interval = 5  # Check for Cursor projects every 5 seconds
+        self.db_ops = DatabaseOperations()
         
         # Get screenshot configuration from capture section
         screenshot_config = config.get('capture', {}).get('screenshot', {})
@@ -51,9 +57,10 @@ class Daemon:
             }
         })
         
-        # Runtime state
-        self.current_activity_level = 'low'
-        self.next_screenshot_time = None
+        # Initialize screenshot timing
+        self._update_next_screenshot_time()
+        
+        logger.info("Daemon initialized")
         
         # Log the thresholds being used
         logger.info("Using activity thresholds:")
@@ -169,6 +176,8 @@ class Daemon:
         
         try:
             while True:
+                current_time = time.time()
+                
                 # Check if user is active
                 is_active = self.aw_client.is_user_active()
                 logger.debug(f"User active status: {is_active}")
@@ -186,6 +195,12 @@ class Daemon:
                         (previous_level == 'medium' and self.current_activity_level == 'high')
                     ):
                         self._update_next_screenshot_time()
+                    
+                    # Check for Cursor projects periodically
+                    if current_time - self.last_cursor_check_time > self.cursor_check_interval:
+                        logger.debug("Checking for Cursor project")
+                        self._check_cursor_project()
+                        self.last_cursor_check_time = current_time
                     
                     # Check if we should take a screenshot
                     if self._should_take_screenshot():
@@ -220,3 +235,17 @@ class Daemon:
         except Exception as e:
             logger.error(f"Error in daemon process: {e}")
             raise
+
+    def _check_cursor_project(self):
+        """Check for and update Cursor project information."""
+        try:
+            cursor_project = self.aw_client.get_cursor_project_from_window()
+            if cursor_project:
+                project_name = cursor_project.get("project_name")
+                project_path = cursor_project.get("project_path")
+                
+                if project_name:
+                    logger.debug(f"Detected Cursor project: {project_name}")
+                    self.db_ops.update_cursor_project(project_name, project_path)
+        except Exception as e:
+            logger.error(f"Error checking Cursor project: {e}")

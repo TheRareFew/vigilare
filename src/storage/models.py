@@ -116,4 +116,15 @@ class AppClassificationModel(BaseModel):
     manual_override = BooleanField(default=False)
 
     class Meta:
-        table_name = 'app_classifications' 
+        table_name = 'app_classifications'
+
+class CursorProjectModel(BaseModel):
+    """Cursor IDE project information."""
+    project_id = AutoField()
+    project_name = CharField(unique=True)
+    project_path = CharField()
+    is_active = BooleanField(default=False)
+    last_accessed = DateTimeField(default=datetime.now)
+
+    class Meta:
+        table_name = 'cursor_projects' 

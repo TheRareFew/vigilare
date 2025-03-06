@@ -86,7 +86,8 @@ class DatabaseManager:
             IntervalTypeModel, PromptTypeModel,
             ScreenshotModel, PromptModel,
             PromptEmbeddingModel, ReportModel,
-            ReportEmbeddingModel, AppClassificationModel
+            ReportEmbeddingModel, AppClassificationModel,
+            CursorProjectModel
         )
         
         models = [
@@ -97,7 +98,8 @@ class DatabaseManager:
             PromptEmbeddingModel,
             ReportModel,
             ReportEmbeddingModel,
-            AppClassificationModel
+            AppClassificationModel,
+            CursorProjectModel
         ]
         
         with self.database:

@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
+import re
 
 from aw_client import ActivityWatchClient as AWClient
 from aw_core.models import Event
@@ -124,6 +125,47 @@ class ActivityWatchClient:
                 logger.warning("Window watcher not running - no window events available")
                 return None
             logger.error(f"Error getting current window: {e}")
+            return None
+
+    def get_cursor_project_from_window(self) -> Optional[Dict[str, str]]:
+        """Extract Cursor project information from the current window title.
+        
+        Returns:
+            Optional[Dict[str, str]]: Project information or None if not available
+        """
+        try:
+            window_info = self.get_current_window()
+            if not window_info:
+                return None
+                
+            app = window_info.get("app", "")
+            title = window_info.get("title", "")
+            
+            # Check if this is a Cursor window
+            if not app or "cursor" not in app.lower():
+                return None
+                
+            # Extract project name from title
+            # Pattern: "filename - project_name - Cursor"
+            cursor_pattern = r'.*? - (.*?) - Cursor'
+            match = re.search(cursor_pattern, title)
+            
+            if match:
+                project_name = match.group(1)
+                
+                # Try to get project path from VSCode watcher
+                vscode_info = self.get_current_vscode_file()
+                project_path = vscode_info.get("project", "") if vscode_info else ""
+                
+                return {
+                    "project_name": project_name,
+                    "project_path": project_path
+                }
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting Cursor project info: {e}")
             return None
 
     def get_current_vscode_file(self, lookback_seconds: int = 10) -> Optional[Dict[str, str]]:
