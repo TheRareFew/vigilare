@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field
 from openai import OpenAI
 from PIL import Image
 from src.storage.models import ScreenshotModel
-from src.vision.ocr import OCRProcessor
 from src.core.config import setup_environment
 from src.core.aw_client import ActivityWatchClient
 
@@ -130,9 +129,6 @@ class ImageAnalyzer:
             self.api_key = api_key or os.getenv('OPENAI_API_KEY')
             if not self.api_key:
                 raise ValueError("OpenAI API key not found")
-            
-            # Initialize OCR processor
-            self.ocr = OCRProcessor()
             
             # Initialize OpenAI client
             self.openai_client = OpenAI(api_key=self.api_key)
@@ -330,8 +326,7 @@ However, you should still analyze the full image content for the 'full_analysis'
                 
         except Exception as e:
             logger.error(f"Error getting current file content: {e}", exc_info=True)
-            # Continue with OCR-based analysis as fallback
-            logger.info("Falling back to OCR-based analysis")
+            logger.info("No active file content available")
             return None
 
     def analyze_image(self, image: Image.Image,
@@ -340,15 +335,10 @@ However, you should still analyze the full image content for the 'full_analysis'
         try:
             logger.info("Starting image analysis")
             
-            # Try to get current file content first
+            # Try to get current file content
             file_data = self._get_current_file_content()
             
-            # Get OCR text as fallback
-            logger.debug("Extracting OCR text from image")
-            ocr_text = self.ocr.get_text_only(image)
-            logger.debug(f"OCR Text extracted (first 500 chars):\n{ocr_text[:500]}...")
-            
-            # Analyze code if code-like content is detected
+            # Analyze code if file content is available
             code_analysis = None
             
             # If we have file content, use that for code analysis
@@ -359,25 +349,9 @@ However, you should still analyze the full image content for the 'full_analysis'
                     logger.debug(f"Code analysis result from file: {json.dumps(code_analysis, indent=2)}")
                 except Exception as e:
                     logger.error(f"Error analyzing file content: {e}", exc_info=True)
-                    logger.info("Falling back to OCR text for code analysis")
                     code_analysis = None
-            
-            # Fall back to OCR text for code analysis if needed
-            if not code_analysis:
-                code_indicators = [
-                    "def ", "class ", "import ", "function", "#include", "package",
-                    "public class", "const ", "var ", "let ", "fn ", "func "
-                ]
-                
-                if ocr_text and any(indicator in ocr_text for indicator in code_indicators):
-                    logger.info("Code-like content detected in OCR text, initiating code analysis")
-                    try:
-                        code_analysis = self._analyze_code(ocr_text)
-                        logger.debug(f"Code analysis result from OCR: {json.dumps(code_analysis, indent=2)}")
-                    except Exception as e:
-                        logger.error(f"Error analyzing OCR text: {e}", exc_info=True)
-                else:
-                    logger.info("No code-like content detected")
+            else:
+                logger.info("No file content available for code analysis")
             
             # Encode image to base64
             logger.debug("Encoding image to base64")
