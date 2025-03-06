@@ -33,7 +33,7 @@ class ScreenCapture:
         self.quality = config.get('quality', 90)  # Reduced default quality
         self.blur_sensitive = config.get('blur_sensitive', True)  # Control blurring
         self.enable_ner = config.get('enable_ner', True)  # Control NER
-        self.screenshots_dir = config.get('screenshots_dir', str(get_data_dir() / 'screenshots'))
+        self.screenshots_dir = config.get('screenshots_dir', os.path.join(get_data_dir(), 'screenshots'))
         os.makedirs(self.screenshots_dir, exist_ok=True)
         self.max_dimension = config.get('max_dimension', 1800)  # Max width/height for screenshots
         

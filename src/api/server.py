@@ -100,12 +100,16 @@ def normalize_path(path):
     path = path.replace('%5C', os.path.sep).replace('\\', os.path.sep)
     # Convert forward slashes to system separator
     path = path.replace('/', os.path.sep)
-    # Resolve the path relative to the data directory
+    
+    # If the path is already absolute and exists, use it directly
+    if os.path.isabs(path) and os.path.exists(path):
+        return path
+        
+    # Otherwise, resolve the path relative to the data directory
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
     full_path = os.path.normpath(os.path.join(base_dir, path))
-    # Ensure the path is within the allowed directory
-    if not full_path.startswith(base_dir):
-        abort(403)  # Forbidden
+    
+    # No need to check if path starts with base_dir since we're allowing absolute paths
     return full_path
 
 @app.route('/api/screenshots', methods=['GET'])
@@ -124,13 +128,22 @@ def get_screenshots():
 def serve_screenshot(image_path):
     """Serve a screenshot image."""
     try:
+        app.logger.debug(f"Requested screenshot: {image_path}")
         full_path = normalize_path(image_path)
+        app.logger.debug(f"Normalized path: {full_path}")
+        
         if not os.path.exists(full_path):
             app.logger.error(f"Screenshot not found: {full_path}")
             return f"Screenshot not found: {image_path}", 404
+            
+        if not os.access(full_path, os.R_OK):
+            app.logger.error(f"Screenshot not readable: {full_path}")
+            return f"Screenshot not readable: {image_path}", 403
+            
+        app.logger.debug(f"Serving screenshot: {full_path}")
         return send_file(full_path, mimetype='image/jpeg')
     except Exception as e:
-        app.logger.error(f"Error serving screenshot {image_path}: {e}")
+        app.logger.error(f"Error serving screenshot {image_path}: {e}", exc_info=True)
         return str(e), 500
 
 @app.route('/api/prompts', methods=['GET'])

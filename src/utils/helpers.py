@@ -105,4 +105,35 @@ def format_file_size(size_in_bytes: int) -> str:
         if size_in_bytes < 1024:
             return f"{size_in_bytes:.1f}{unit}"
         size_in_bytes /= 1024
-    return f"{size_in_bytes:.1f}TB" 
+    return f"{size_in_bytes:.1f}TB"
+
+def get_cursor_workspace_storage_path() -> str:
+    """Get the path to the Cursor workspaceStorage directory.
+    
+    Returns:
+        str: Path to the Cursor workspaceStorage directory
+    """
+    user_home = os.path.expanduser("~")
+    return os.path.join(user_home, "AppData", "Roaming", "Cursor", "User", "workspaceStorage")
+
+def get_most_recent_workspace_dir() -> str:
+    """Get the most recently modified directory within the Cursor workspaceStorage directory.
+    
+    Returns:
+        str: Path to the most recently modified workspace directory
+    """
+    workspace_storage_path = get_cursor_workspace_storage_path()
+    
+    if not os.path.exists(workspace_storage_path):
+        return ""
+    
+    dirs = [os.path.join(workspace_storage_path, d) for d in os.listdir(workspace_storage_path) 
+            if os.path.isdir(os.path.join(workspace_storage_path, d))]
+    
+    if not dirs:
+        return ""
+    
+    # Sort directories by modification time (most recent first)
+    most_recent_dir = max(dirs, key=os.path.getmtime)
+    
+    return most_recent_dir 

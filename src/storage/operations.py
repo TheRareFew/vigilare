@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Union
 import json
+import os
 
 from peewee import fn, JOIN
 
@@ -60,7 +61,7 @@ class DatabaseOperations:
             screenshot = ScreenshotModel.get_by_id(screenshot_id)
             return {
                 'image_id': screenshot.image_id,
-                'image_path': screenshot.image_path,
+                'image_path': os.path.abspath(screenshot.image_path),
                 'ocr_text': screenshot.ocr_text,
                 'image_summary': screenshot.image_summary,
                 'context': self._serialize_context(screenshot.context),
@@ -95,7 +96,7 @@ class DatabaseOperations:
             
             return [{
                 'image_id': s.image_id,
-                'image_path': s.image_path,
+                'image_path': os.path.abspath(s.image_path),
                 'ocr_text': s.ocr_text,
                 'image_summary': s.image_summary,
                 'context': self._serialize_context(s.context),

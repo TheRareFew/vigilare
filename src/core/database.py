@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 # Global database proxy
 database_proxy = DatabaseProxy()
 
+# Export get_data_dir for use in other modules
+__all__ = ['init_database', 'get_database', 'close_database', 'get_data_dir']
+
 def get_aw_db_path(testing: bool = False) -> str:
     """Get the ActivityWatch database path.
     

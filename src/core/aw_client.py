@@ -2,6 +2,7 @@
 
 import logging
 import platform
+import os
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
@@ -123,6 +124,108 @@ class ActivityWatchClient:
                 logger.warning("Window watcher not running - no window events available")
                 return None
             logger.error(f"Error getting current window: {e}")
+            return None
+
+    def get_current_vscode_file(self, lookback_seconds: int = 10) -> Optional[Dict[str, str]]:
+        """Get information about the currently open file in VSCode/Cursor.
+        
+        Args:
+            lookback_seconds: Number of seconds to look back for VSCode events
+            
+        Returns:
+            Optional[Dict[str, str]]: File information or None if not available
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            start = now - timedelta(seconds=lookback_seconds)
+            timeperiods = [(start, now)]
+
+            # Query for VSCode watcher events
+            query = """
+                vscode_events = flood(query_bucket(find_bucket("aw-watcher-vscode")));
+                vscode_events = sort_by_timestamp(vscode_events);
+                RETURN = vscode_events;
+            """
+
+            logger.debug(f"Getting current VSCode file info from {start} to {now}")
+            logger.debug(f"Using testing mode: {self.testing} (port: {5666 if self.testing else 5600})")
+            results = self.client.query(query, timeperiods)
+            
+            if not results or not results[0]:
+                logger.debug("No VSCode events found in the specified time period")
+                return None
+                
+            # Get the most recent event
+            vscode_event = results[0][-1]  # Last event is most recent
+            file_info = {
+                "language": vscode_event["data"].get("language", ""),
+                "project": vscode_event["data"].get("project", ""),
+                "file": vscode_event["data"].get("file", "")
+            }
+            logger.debug(f"Current VSCode file info: {file_info}")
+            return file_info
+            
+        except Exception as e:
+            if "bucket" in str(e).lower() and "not found" in str(e).lower():
+                logger.warning("VSCode watcher not running or bucket not found - no VSCode events available")
+                return None
+            elif "connection" in str(e).lower():
+                logger.error(f"Connection error to ActivityWatch server: {e}")
+                logger.info(f"Make sure ActivityWatch server is running on port {5666 if self.testing else 5600}")
+                return None
+            else:
+                logger.error(f"Error getting current VSCode file: {e}")
+                return None
+            
+    def get_file_content(self, file_path: str) -> Optional[str]:
+        """Get the content of a file.
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Optional[str]: File content or None if not available
+        """
+        try:
+            # Normalize file path for Windows
+            normalized_path = file_path
+            
+            # Check if file exists
+            if not os.path.exists(normalized_path):
+                logger.warning(f"File does not exist: {normalized_path}")
+                # Try to handle Windows path format
+                if '\\' in normalized_path and platform.system() == 'Windows':
+                    # Try alternative path format
+                    alternative_path = normalized_path.replace('\\', '/')
+                    if os.path.exists(alternative_path):
+                        normalized_path = alternative_path
+                        logger.info(f"Using alternative path format: {normalized_path}")
+                    else:
+                        return None
+                else:
+                    return None
+                
+            # Read file content
+            logger.debug(f"Reading file: {normalized_path}")
+            with open(normalized_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            logger.debug(f"Read {len(content)} characters from {normalized_path}")
+            return content
+            
+        except UnicodeDecodeError:
+            # Try with different encoding
+            logger.warning(f"Unicode decode error with utf-8, trying with latin-1 encoding")
+            try:
+                with open(normalized_path, 'r', encoding='latin-1') as f:
+                    content = f.read()
+                logger.debug(f"Successfully read file with latin-1 encoding")
+                return content
+            except Exception as e:
+                logger.error(f"Error reading file with latin-1 encoding: {e}")
+                return None
+        except Exception as e:
+            logger.error(f"Error reading file {file_path}: {e}")
             return None
 
     def close(self):
