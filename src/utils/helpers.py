@@ -3,6 +3,9 @@
 import os
 from datetime import datetime
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 def ensure_dir(directory: str):
     """Ensure a directory exists, creating it if necessary.
@@ -114,7 +117,9 @@ def get_cursor_workspace_storage_path() -> str:
         str: Path to the Cursor workspaceStorage directory
     """
     user_home = os.path.expanduser("~")
-    return os.path.join(user_home, "AppData", "Roaming", "Cursor", "User", "workspaceStorage")
+    path = os.path.join(user_home, "AppData", "Roaming", "Cursor", "User", "workspaceStorage")
+    logger.debug(f"Cursor workspaceStorage path: '{path}'")
+    return path
 
 def get_most_recent_workspace_dir() -> str:
     """Get the most recently modified directory within the Cursor workspaceStorage directory.
@@ -125,15 +130,24 @@ def get_most_recent_workspace_dir() -> str:
     workspace_storage_path = get_cursor_workspace_storage_path()
     
     if not os.path.exists(workspace_storage_path):
+        logger.debug(f"Workspace storage path does not exist: '{workspace_storage_path}'")
         return ""
     
+    logger.debug(f"Scanning workspace storage directory: '{workspace_storage_path}'")
     dirs = [os.path.join(workspace_storage_path, d) for d in os.listdir(workspace_storage_path) 
             if os.path.isdir(os.path.join(workspace_storage_path, d))]
     
     if not dirs:
+        logger.debug("No workspace directories found")
         return ""
+    
+    logger.debug(f"Found {len(dirs)} workspace directories")
     
     # Sort directories by modification time (most recent first)
     most_recent_dir = max(dirs, key=os.path.getmtime)
+    
+    # Get the modification time for logging
+    mod_time = datetime.fromtimestamp(os.path.getmtime(most_recent_dir))
+    logger.debug(f"Most recent workspace directory: '{most_recent_dir}' (modified: {mod_time.isoformat()})")
     
     return most_recent_dir 

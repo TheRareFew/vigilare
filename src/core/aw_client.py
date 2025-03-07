@@ -134,17 +134,24 @@ class ActivityWatchClient:
             Optional[Dict[str, str]]: Project information or None if not available
         """
         try:
+            logger.debug("Attempting to extract Cursor project from window title")
             window_info = self.get_current_window()
+            
             if not window_info:
+                logger.debug("No window info available")
                 return None
                 
             app = window_info.get("app", "")
             title = window_info.get("title", "")
+            logger.debug(f"Window info: app='{app}', title='{title}'")
             
             # Check if this is a Cursor window
             if not app or "cursor" not in app.lower():
+                logger.debug(f"Not a Cursor window: {app}")
                 return None
                 
+            logger.debug(f"Detected Cursor window: {app}")
+            
             # Extract project name from title
             # Pattern: "filename - project_name - Cursor"
             cursor_pattern = r'.*? - (.*?) - Cursor'
@@ -152,15 +159,14 @@ class ActivityWatchClient:
             
             if match:
                 project_name = match.group(1)
-                
-                # Try to get project path from VSCode watcher
-                vscode_info = self.get_current_vscode_file()
-                project_path = vscode_info.get("project", "") if vscode_info else ""
+                logger.debug(f"Extracted project name: '{project_name}' from title: '{title}'")
                 
                 return {
                     "project_name": project_name,
-                    "project_path": project_path
+                    "project_path": ""  # We'll determine the path using helpers.get_most_recent_workspace_dir()
                 }
+            else:
+                logger.debug(f"Could not extract project name from title: '{title}'")
                 
             return None
             

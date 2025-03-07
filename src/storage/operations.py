@@ -295,38 +295,48 @@ class DatabaseOperations:
             bool: True if successful, False otherwise
         """
         try:
+            logger.debug(f"Updating Cursor project: '{project_name}'")
+            
             # Set all projects as inactive first
-            CursorProjectModel.update(is_active=False).execute()
+            inactive_count = CursorProjectModel.update(is_active=False).execute()
+            logger.debug(f"Set {inactive_count} projects to inactive")
+            
+            # If no project path is provided, try to find it
+            if not project_path:
+                logger.debug("No project path provided, attempting to determine from workspace storage")
+                # Use the workspace storage function to find the most recent workspace
+                from src.utils.helpers import get_most_recent_workspace_dir
+                project_path = get_most_recent_workspace_dir()
+                logger.debug(f"Determined project path from workspace storage: '{project_path}'")
             
             # Try to get existing project
             try:
+                logger.debug(f"Checking if project '{project_name}' already exists")
                 project = CursorProjectModel.get(CursorProjectModel.project_name == project_name)
+                logger.debug(f"Found existing project: {project_name}")
                 
                 # Update project
                 project.is_active = True
                 project.last_accessed = datetime.now()
                 
-                # Update path if provided
+                # Update path if we have one
                 if project_path:
+                    logger.debug(f"Updating project path to: '{project_path}'")
                     project.project_path = project_path
                     
                 project.save()
-                logger.info(f"Updated Cursor project: {project_name}")
+                logger.info(f"Updated Cursor project: '{project_name}' (path: '{project_path}')")
                 
             except CursorProjectModel.DoesNotExist:
                 # Create new project
-                if not project_path:
-                    # Try to find the path using the workspace storage function
-                    from src.utils.helpers import get_most_recent_workspace_dir
-                    project_path = get_most_recent_workspace_dir()
-                
+                logger.debug(f"Project '{project_name}' does not exist, creating new entry")
                 CursorProjectModel.create(
                     project_name=project_name,
                     project_path=project_path or "",
                     is_active=True,
                     last_accessed=datetime.now()
                 )
-                logger.info(f"Created new Cursor project: {project_name}")
+                logger.info(f"Created new Cursor project: '{project_name}' (path: '{project_path}')")
                 
             return True
             

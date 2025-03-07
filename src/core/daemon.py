@@ -5,6 +5,7 @@ import random
 import time
 from datetime import datetime
 from typing import Dict
+import re
 
 from src.capture.screencap import ScreenCapture
 from src.core.aw_client import ActivityWatchClient
@@ -239,13 +240,36 @@ class Daemon:
     def _check_cursor_project(self):
         """Check for and update Cursor project information."""
         try:
-            cursor_project = self.aw_client.get_cursor_project_from_window()
-            if cursor_project:
-                project_name = cursor_project.get("project_name")
-                project_path = cursor_project.get("project_path")
+            # Get current window info
+            window_info = self.aw_client.get_current_window()
+            
+            if window_info:
+                app = window_info.get("app", "")
+                title = window_info.get("title", "")
+                logger.debug(f"Window info: app='{app}', title='{title}'")
                 
-                if project_name:
-                    logger.debug(f"Detected Cursor project: {project_name}")
-                    self.db_ops.update_cursor_project(project_name, project_path)
+                # Check if this is a Cursor window
+                if app and "cursor" in app.lower():
+                    logger.debug(f"Detected Cursor window: {app}")
+                    
+                    # Extract project name from window title
+                    cursor_pattern = r'.*? - (.*?) - Cursor'
+                    match = re.search(cursor_pattern, title)
+                    
+                    if match:
+                        project_name = match.group(1)
+                        logger.debug(f"Extracted project name: '{project_name}' from title: '{title}'")
+                        
+                        # Update the project in the database
+                        logger.debug(f"Updating Cursor project in database: {project_name}")
+                        success = self.db_ops.update_cursor_project(project_name)
+                        logger.debug(f"Database update {'successful' if success else 'failed'}")
+                    else:
+                        logger.debug(f"Could not extract project name from title: '{title}'")
+                else:
+                    logger.debug(f"Not a Cursor window: {app}")
+            else:
+                logger.debug("No window info available")
+            
         except Exception as e:
             logger.error(f"Error checking Cursor project: {e}")
