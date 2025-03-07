@@ -289,7 +289,7 @@ class DatabaseOperations:
         
         Args:
             project_name: Name of the Cursor project
-            project_path: Path to the Cursor project (optional)
+            project_path: Path to the Cursor project data (optional)
             
         Returns:
             bool: True if successful, False otherwise
@@ -302,12 +302,20 @@ class DatabaseOperations:
             logger.debug(f"Set {inactive_count} projects to inactive")
             
             # If no project path is provided, try to find it
-            if not project_path:
-                logger.debug("No project path provided, attempting to determine from workspace storage")
+            cursor_data_path = project_path
+            if not cursor_data_path:
+                logger.debug("No cursor data path provided, attempting to determine from workspace storage")
                 # Use the workspace storage function to find the most recent workspace
                 from src.utils.helpers import get_most_recent_workspace_dir
-                project_path = get_most_recent_workspace_dir()
-                logger.debug(f"Determined project path from workspace storage: '{project_path}'")
+                cursor_data_path = get_most_recent_workspace_dir()
+                logger.debug(f"Determined cursor data path from workspace storage: '{cursor_data_path}'")
+            
+            # Extract the actual project path from the Cursor database
+            actual_project_path = None
+            if cursor_data_path:
+                from src.utils.helpers import extract_project_path_from_cursor_db
+                actual_project_path = extract_project_path_from_cursor_db(cursor_data_path)
+                logger.debug(f"Extracted actual project path: '{actual_project_path}'")
             
             # Try to get existing project
             try:
@@ -319,29 +327,37 @@ class DatabaseOperations:
                 project.is_active = True
                 project.last_accessed = datetime.now()
                 
-                # Update path if we have one
-                if project_path:
-                    logger.debug(f"Updating project path to: '{project_path}'")
-                    project.project_path = project_path
+                # Update cursor data path if we have one
+                if cursor_data_path:
+                    logger.debug(f"Updating cursor data path to: '{cursor_data_path}'")
+                    project.cursor_data_path = cursor_data_path
+                
+                # Update actual project path if we have one
+                if actual_project_path:
+                    logger.debug(f"Updating actual project path to: '{actual_project_path}'")
+                    project.project_path = actual_project_path
                     
                 project.save()
-                logger.info(f"Updated Cursor project: '{project_name}' (path: '{project_path}')")
+                logger.info(f"Updated Cursor project: '{project_name}' (cursor data path: '{cursor_data_path}', project path: '{actual_project_path}')")
                 
             except CursorProjectModel.DoesNotExist:
                 # Create new project
                 logger.debug(f"Project '{project_name}' does not exist, creating new entry")
                 CursorProjectModel.create(
                     project_name=project_name,
-                    project_path=project_path or "",
+                    project_path=actual_project_path or "",
+                    cursor_data_path=cursor_data_path or "",
                     is_active=True,
                     last_accessed=datetime.now()
                 )
-                logger.info(f"Created new Cursor project: '{project_name}' (path: '{project_path}')")
+                logger.info(f"Created new Cursor project: '{project_name}' (cursor data path: '{cursor_data_path}', project path: '{actual_project_path}')")
                 
             return True
             
         except Exception as e:
             logger.error(f"Error updating Cursor project: {e}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             return False
             
     def get_active_cursor_project(self) -> Optional[Dict[str, Any]]:
@@ -356,6 +372,7 @@ class DatabaseOperations:
                 'project_id': project.project_id,
                 'project_name': project.project_name,
                 'project_path': project.project_path,
+                'cursor_data_path': project.cursor_data_path,
                 'last_accessed': project.last_accessed.isoformat()
             }
         except CursorProjectModel.DoesNotExist:
@@ -376,6 +393,7 @@ class DatabaseOperations:
                 'project_id': p.project_id,
                 'project_name': p.project_name,
                 'project_path': p.project_path,
+                'cursor_data_path': p.cursor_data_path,
                 'is_active': p.is_active,
                 'last_accessed': p.last_accessed.isoformat()
             } for p in projects]

@@ -97,34 +97,52 @@ class ActivityWatchClient:
         """
         try:
             now = datetime.now(timezone.utc)
-            start = now - timedelta(seconds=1)
+            # Look back a bit further to increase chances of finding a window event
+            start = now - timedelta(seconds=5)
             timeperiods = [(start, now)]
 
-            query = """
-                window_events = flood(query_bucket(find_bucket("aw-watcher-window_")));
+            # Try to find the window bucket dynamically
+            buckets = self.client.get_buckets()
+            window_buckets = [b for b in buckets.keys() if "window" in b.lower()]
+            
+            if not window_buckets:
+                logger.warning("No window watcher buckets found. Make sure aw-watcher-window is running.")
+                return None
+                
+            logger.debug(f"Found window buckets: {window_buckets}")
+            
+            # Use the first window bucket found
+            window_bucket = window_buckets[0]
+            
+            query = f"""
+                window_events = flood(query_bucket(find_bucket("{window_bucket}")));
+                window_events = sort_by_timestamp(window_events);
                 RETURN = window_events;
             """
 
-            logger.debug(f"Getting current window info from {start} to {now}")
+            logger.debug(f"Getting current window info from {start} to {now} using bucket '{window_bucket}'")
             results = self.client.query(query, timeperiods)
-            logger.debug(f"Window query results: {results}")
             
-            if results and results[0]:
-                window_event = results[0][0]
-                window_info = {
-                    "app": window_event["data"].get("app", ""),
-                    "title": window_event["data"].get("title", "")
-                }
-                logger.debug(f"Current window info: {window_info}")
-                return window_info
-            logger.debug("No window info available")
-            return None
+            if not results or not results[0]:
+                logger.debug(f"No window events found in bucket '{window_bucket}' for the specified time period")
+                return None
+                
+            # Get the most recent event
+            window_event = results[0][-1]  # Last event is most recent
+            window_info = {
+                "app": window_event["data"].get("app", ""),
+                "title": window_event["data"].get("title", "")
+            }
+            logger.debug(f"Current window info: {window_info}")
+            return window_info
             
         except Exception as e:
             if "bucket" in str(e).lower() and "not found" in str(e).lower():
                 logger.warning("Window watcher not running - no window events available")
                 return None
             logger.error(f"Error getting current window: {e}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             return None
 
     def get_cursor_project_from_window(self) -> Optional[Dict[str, str]]:
@@ -161,9 +179,20 @@ class ActivityWatchClient:
                 project_name = match.group(1)
                 logger.debug(f"Extracted project name: '{project_name}' from title: '{title}'")
                 
+                # Get the cursor data path
+                from src.utils.helpers import get_most_recent_workspace_dir
+                cursor_data_path = get_most_recent_workspace_dir()
+                
+                # Extract the actual project path
+                actual_project_path = ""
+                if cursor_data_path:
+                    from src.utils.helpers import extract_project_path_from_cursor_db
+                    actual_project_path = extract_project_path_from_cursor_db(cursor_data_path) or ""
+                
                 return {
                     "project_name": project_name,
-                    "project_path": ""  # We'll determine the path using helpers.get_most_recent_workspace_dir()
+                    "project_path": actual_project_path,
+                    "cursor_data_path": cursor_data_path or ""
                 }
             else:
                 logger.debug(f"Could not extract project name from title: '{title}'")
@@ -172,6 +201,8 @@ class ActivityWatchClient:
             
         except Exception as e:
             logger.error(f"Error extracting Cursor project info: {e}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             return None
 
     def get_current_vscode_file(self, lookback_seconds: int = 10) -> Optional[Dict[str, str]]:

@@ -123,6 +123,7 @@ class CursorProjectModel(BaseModel):
     project_id = AutoField()
     project_name = CharField(unique=True)
     project_path = CharField()
+    cursor_data_path = CharField(null=True)  # Path to Cursor data for the project
     is_active = BooleanField(default=False)
     last_accessed = DateTimeField(default=datetime.now)
 

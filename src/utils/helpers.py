@@ -2,8 +2,13 @@
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 import logging
+import re
+import json
+import sqlite3
+from pathlib import Path
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -121,33 +126,110 @@ def get_cursor_workspace_storage_path() -> str:
     logger.debug(f"Cursor workspaceStorage path: '{path}'")
     return path
 
-def get_most_recent_workspace_dir() -> str:
-    """Get the most recently modified directory within the Cursor workspaceStorage directory.
+def get_most_recent_workspace_dir() -> Optional[str]:
+    """Get the most recently used Cursor workspace directory.
     
     Returns:
-        str: Path to the most recently modified workspace directory
+        Optional[str]: Path to the most recent workspace directory or None if not found
     """
-    workspace_storage_path = get_cursor_workspace_storage_path()
+    try:
+        # Get the Cursor workspace storage directory
+        cursor_dir = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Cursor", "User", "workspaceStorage")
+        
+        if not os.path.exists(cursor_dir):
+            logger.warning(f"Cursor workspace storage directory not found: {cursor_dir}")
+            return None
+            
+        # Get all workspace directories
+        workspace_dirs = [os.path.join(cursor_dir, d) for d in os.listdir(cursor_dir) 
+                         if os.path.isdir(os.path.join(cursor_dir, d))]
+        
+        if not workspace_dirs:
+            logger.warning("No Cursor workspace directories found")
+            return None
+            
+        # Sort by modification time (most recent first)
+        workspace_dirs.sort(key=lambda d: os.path.getmtime(d), reverse=True)
+        
+        # Return the most recent directory
+        return workspace_dirs[0]
+        
+    except Exception as e:
+        logger.error(f"Error getting most recent workspace directory: {e}")
+        return None
+
+def extract_project_path_from_cursor_db(cursor_data_path: str) -> Optional[str]:
+    """Extract the actual project path from the Cursor SQLite database.
     
-    if not os.path.exists(workspace_storage_path):
-        logger.debug(f"Workspace storage path does not exist: '{workspace_storage_path}'")
-        return ""
-    
-    logger.debug(f"Scanning workspace storage directory: '{workspace_storage_path}'")
-    dirs = [os.path.join(workspace_storage_path, d) for d in os.listdir(workspace_storage_path) 
-            if os.path.isdir(os.path.join(workspace_storage_path, d))]
-    
-    if not dirs:
-        logger.debug("No workspace directories found")
-        return ""
-    
-    logger.debug(f"Found {len(dirs)} workspace directories")
-    
-    # Sort directories by modification time (most recent first)
-    most_recent_dir = max(dirs, key=os.path.getmtime)
-    
-    # Get the modification time for logging
-    mod_time = datetime.fromtimestamp(os.path.getmtime(most_recent_dir))
-    logger.debug(f"Most recent workspace directory: '{most_recent_dir}' (modified: {mod_time.isoformat()})")
-    
-    return most_recent_dir 
+    Args:
+        cursor_data_path: Path to the Cursor workspace storage directory
+        
+    Returns:
+        Optional[str]: The actual project path or None if not found
+    """
+    try:
+        if not cursor_data_path or not os.path.exists(cursor_data_path):
+            logger.warning(f"Invalid Cursor data path: {cursor_data_path}")
+            return None
+            
+        # Path to the SQLite database
+        db_path = os.path.join(cursor_data_path, "state.vscdb")
+        
+        if not os.path.exists(db_path):
+            logger.warning(f"Cursor state database not found: {db_path}")
+            return None
+            
+        logger.debug(f"Connecting to Cursor database: {db_path}")
+        
+        # Connect to the database
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Query for the debug.selectedroot key
+        cursor.execute("SELECT value FROM ItemTable WHERE key = 'debug.selectedroot'")
+        result = cursor.fetchone()
+        
+        conn.close()
+        
+        if not result:
+            logger.warning("No debug.selectedroot key found in Cursor database")
+            return None
+            
+        # Extract the path from the result
+        file_uri = result[0]
+        logger.debug(f"Found project path URI: {file_uri}")
+        
+        # Parse the URI to get the actual path
+        # Example: file:///c%3A/gauntlet/activitywatch_ai/.vscode/launch.json
+        if file_uri.startswith("file:///"):
+            # Remove the file:/// prefix
+            path = file_uri[8:]
+            
+            # URL decode the path
+            path = unquote(path)
+            
+            # Convert to proper Windows path if needed
+            if path.startswith("c:") or path.startswith("C:"):
+                path = path.replace("/", "\\")
+            
+            # Remove the .vscode/launch.json or any other file part
+            path = Path(path)
+            if ".vscode" in path.parts:
+                # Remove .vscode and everything after it
+                vscode_index = path.parts.index(".vscode")
+                path = Path(*path.parts[:vscode_index])
+            elif path.is_file():
+                # If it's a file path, get the parent directory
+                path = path.parent
+                
+            logger.debug(f"Extracted project path: {path}")
+            return str(path)
+        else:
+            logger.warning(f"Unexpected URI format: {file_uri}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error extracting project path from Cursor database: {e}")
+        import traceback
+        logger.debug(f"Traceback: {traceback.format_exc()}")
+        return None 

@@ -240,6 +240,8 @@ class Daemon:
     def _check_cursor_project(self):
         """Check for and update Cursor project information."""
         try:
+            logger.debug("Checking for Cursor project")
+            
             # Get current window info
             window_info = self.aw_client.get_current_window()
             
@@ -260,16 +262,38 @@ class Daemon:
                         project_name = match.group(1)
                         logger.debug(f"Extracted project name: '{project_name}' from title: '{title}'")
                         
-                        # Update the project in the database
-                        logger.debug(f"Updating Cursor project in database: {project_name}")
-                        success = self.db_ops.update_cursor_project(project_name)
-                        logger.debug(f"Database update {'successful' if success else 'failed'}")
+                        # Get cursor project info including paths
+                        project_info = self.aw_client.get_cursor_project_from_window()
+                        
+                        if project_info:
+                            # Update the project in the database with all available info
+                            logger.debug(f"Updating Cursor project in database: {project_name}")
+                            cursor_data_path = project_info.get("cursor_data_path", "")
+                            success = self.db_ops.update_cursor_project(project_name, cursor_data_path)
+                            logger.debug(f"Database update {'successful' if success else 'failed'}")
+                        else:
+                            # Fallback to just updating with the name
+                            logger.debug(f"Updating Cursor project in database with name only: {project_name}")
+                            success = self.db_ops.update_cursor_project(project_name)
+                            logger.debug(f"Database update {'successful' if success else 'failed'}")
                     else:
                         logger.debug(f"Could not extract project name from title: '{title}'")
                 else:
                     logger.debug(f"Not a Cursor window: {app}")
             else:
-                logger.debug("No window info available")
+                logger.debug("No window info available - this may happen if the window watcher is not running or no window events were captured in the last second")
+                # Try to check if the window watcher is running
+                try:
+                    buckets = self.aw_client.client.get_buckets()
+                    window_buckets = [b for b in buckets if "window" in b.lower()]
+                    if not window_buckets:
+                        logger.warning("No window watcher buckets found. Make sure aw-watcher-window is running.")
+                    else:
+                        logger.debug(f"Window watcher buckets found: {window_buckets}")
+                except Exception as bucket_err:
+                    logger.warning(f"Could not check window watcher buckets: {bucket_err}")
             
         except Exception as e:
             logger.error(f"Error checking Cursor project: {e}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
