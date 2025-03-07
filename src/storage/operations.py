@@ -550,7 +550,8 @@ class DatabaseOperations:
             List[PromptModel]: List of prompt models in the timeframe
         """
         try:
-            prompts = (PromptModel
+            # Get regular prompts
+            prompts = list(PromptModel
                       .select(PromptModel, PromptTypeModel)
                       .join(PromptTypeModel)
                       .where(
@@ -559,7 +560,50 @@ class DatabaseOperations:
                       )
                       .order_by(PromptModel.timestamp.desc()))
             
-            return list(prompts)
+            # Get cursor chat prompts
+            cursor_chats = list(CursorChatModel
+                           .select()
+                           .where(
+                               (CursorChatModel.timestamp >= start_time) &
+                               (CursorChatModel.timestamp <= end_time)
+                           ))
+            
+            # Get cursor chat prompt type
+            cursor_prompt_type, _ = PromptTypeModel.get_or_create(prompt_type_name="cursor_chat")
+            
+            # Check if we already have prompts for these cursor chats
+            # by checking for prompts with the same timestamp and prompt_type
+            existing_cursor_prompts = list(PromptModel
+                                      .select()
+                                      .where(
+                                          (PromptModel.prompt_type == cursor_prompt_type) &
+                                          (PromptModel.timestamp >= start_time) &
+                                          (PromptModel.timestamp <= end_time)
+                                      ))
+            
+            # Create a set of existing timestamps for quick lookup
+            existing_timestamps = {p.timestamp for p in existing_cursor_prompts}
+            
+            # Only create new prompt models for cursor chats that don't already have one
+            for chat in cursor_chats:
+                if chat.timestamp not in existing_timestamps:
+                    # Create a prompt model for the cursor chat
+                    prompt = PromptModel.create(
+                        prompt_text=chat.prompt_text,
+                        prompt_type=cursor_prompt_type,
+                        model_name=chat.model_name or "Unknown",
+                        llm_tool_used="Cursor",
+                        timestamp=chat.timestamp,
+                        context=f"Cursor Project: {chat.cursor_project.project_name if chat.cursor_project else 'Unknown'}"
+                    )
+                    
+                    # Add to the list of prompts
+                    prompts.append(prompt)
+            
+            # Sort by timestamp (descending)
+            prompts.sort(key=lambda x: x.timestamp, reverse=True)
+            
+            return prompts
         except Exception as e:
             logger.error(f"Error getting prompts in timeframe: {e}")
             return []

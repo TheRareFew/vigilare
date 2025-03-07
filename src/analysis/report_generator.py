@@ -436,6 +436,14 @@ class ReportGenerator:
             best_practices_followed_str = "\n".join([f"- {practice}" for practice in context.best_practices_followed[:10]])
             best_practices_violations_str = "\n".join([f"- {violation}" for violation in context.best_practices_violations[:10]])
             
+            # Check if Cursor is being used
+            cursor_usage = context.prompts_by_tool.get("Cursor", 0)
+            cursor_usage_str = ""
+            if cursor_usage > 0:
+                cursor_usage_str = f"\n\n## Cursor Usage:\n- Total Cursor prompts: {cursor_usage}"
+                if "cursor_chat" in context.prompts_by_type:
+                    cursor_usage_str += f"\n- Cursor chat prompts: {context.prompts_by_type['cursor_chat']}"
+            
             # Create the prompt
             prompt = f"""
 You are an expert productivity analyst and coding mentor. Generate a detailed hourly report for the user's activity from {start_time_str} to {end_time_str}.
@@ -459,7 +467,7 @@ You are an expert productivity analyst and coding mentor. Generate a detailed ho
 - Prompts by tool:
 {prompts_by_tool_str}
 - Prompts by type:
-{prompts_by_type_str}
+{prompts_by_type_str}{cursor_usage_str}
 
 ## Coding Best Practices:
 ### Followed:
@@ -475,7 +483,7 @@ Based on this data, generate a thorough, insightful report with the following se
 4. LLM Usage Analysis - How effectively the user is leveraging LLMs, with suggestions for better prompting
 5. Recommendations - Specific, actionable recommendations for improving productivity and coding practices
 
-The report should be detailed, insightful, and provide specific, actionable advice. Use markdown formatting.
+The report should be detailed, insightful, and provide specific, actionable advice. Reference specific data from the context in the report. Use markdown formatting.
 """
             
             # Call the OpenAI API
