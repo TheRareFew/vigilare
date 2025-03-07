@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Union
 import json
 import os
+import traceback
 
 from peewee import fn, JOIN
 
@@ -17,7 +18,7 @@ from src.core.database import get_database
 from src.storage.models import (
     ScreenshotModel, PromptModel, PromptTypeModel,
     ReportModel, AppClassificationModel,
-    IntervalTypeModel, CursorProjectModel
+    IntervalTypeModel, CursorProjectModel, CursorChatModel
 )
 
 logger = logging.getLogger(__name__)
@@ -269,6 +270,7 @@ class DatabaseOperations:
             report_count = ReportModel.select().count()
             app_classification_count = AppClassificationModel.select().count()
             cursor_project_count = CursorProjectModel.select().count()
+            cursor_chat_count = CursorChatModel.select().count()
             
             return {
                 'screenshot_count': screenshot_count,
@@ -276,6 +278,7 @@ class DatabaseOperations:
                 'report_count': report_count,
                 'app_classification_count': app_classification_count,
                 'cursor_project_count': cursor_project_count,
+                'cursor_chat_count': cursor_chat_count,
                 'database_size_bytes': os.path.getsize(database.db_path) if hasattr(database, 'db_path') else 0
             }
         except Exception as e:
@@ -356,7 +359,6 @@ class DatabaseOperations:
             
         except Exception as e:
             logger.error(f"Error updating Cursor project: {e}")
-            import traceback
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return False
             
@@ -382,21 +384,157 @@ class DatabaseOperations:
             return None
             
     def get_all_cursor_projects(self) -> List[Dict[str, Any]]:
-        """Get all Cursor projects.
+        """Get all cursor projects.
         
         Returns:
-            List[Dict[str, Any]]: List of all projects
+            List[Dict[str, Any]]: List of cursor projects
         """
         try:
-            projects = CursorProjectModel.select().order_by(CursorProjectModel.last_accessed.desc())
-            return [{
-                'project_id': p.project_id,
-                'project_name': p.project_name,
-                'project_path': p.project_path,
-                'cursor_data_path': p.cursor_data_path,
-                'is_active': p.is_active,
-                'last_accessed': p.last_accessed.isoformat()
-            } for p in projects]
+            projects = list(CursorProjectModel.select().dicts())
+            return projects
         except Exception as e:
-            logger.error(f"Error getting all Cursor projects: {e}")
+            logger.error(f"Error getting cursor projects: {e}")
+            return []
+
+    def add_cursor_chat(self, 
+                       cursor_project_id: Optional[int], 
+                       prompt_key: str, 
+                       prompt_id: str, 
+                       prompt_text: str, 
+                       response_text: Optional[str] = None, 
+                       files: Optional[Dict[str, Any]] = None, 
+                       timestamp: Optional[datetime] = None, 
+                       model_name: Optional[str] = None) -> Optional[int]:
+        """Add a cursor chat to the database.
+        
+        Args:
+            cursor_project_id: ID of the cursor project (optional)
+            prompt_key: Key from the Cursor database (e.g., 'aiService.prompts')
+            prompt_id: Unique identifier for the prompt within Cursor
+            prompt_text: The actual prompt text
+            response_text: The response text (optional)
+            files: Associated files (optional)
+            timestamp: When the prompt was created (optional)
+            model_name: The model used for the response (optional)
+            
+        Returns:
+            Optional[int]: ID of the created chat or None if failed
+        """
+        try:
+            # Validate inputs
+            if not prompt_key or not prompt_id:
+                logger.error("Missing required fields: prompt_key or prompt_id")
+                return None
+                
+            # Log the inputs
+            logger.debug(f"Adding cursor chat - prompt_key: {prompt_key}, prompt_id: {prompt_id}")
+            logger.debug(f"Prompt text (first 50 chars): {prompt_text[:50] if prompt_text else 'None'}")
+            
+            # Check if this chat already exists
+            try:
+                existing_chat = CursorChatModel.select().where(
+                    (CursorChatModel.prompt_key == prompt_key) & 
+                    (CursorChatModel.prompt_id == prompt_id)
+                ).first()
+                
+                if existing_chat:
+                    logger.debug(f"Cursor chat already exists: {prompt_key} - {prompt_id}")
+                    return existing_chat.chat_id
+            except Exception as e:
+                logger.error(f"Error checking for existing chat: {e}")
+                # Continue with the insertion attempt
+            
+            # Prepare files as JSON string if provided
+            files_json = None
+            if files:
+                try:
+                    files_json = json.dumps(files)
+                except Exception as e:
+                    logger.error(f"Error serializing files to JSON: {e}")
+            
+            # Use current time if timestamp not provided
+            if timestamp is None:
+                timestamp = datetime.now()
+                
+            # Truncate prompt_text and response_text if they are too long
+            # SQLite has a limit of 1 billion bytes per cell, but we'll be more conservative
+            max_text_length = 100000  # 100K characters should be plenty
+            
+            if prompt_text and len(prompt_text) > max_text_length:
+                logger.warning(f"Truncating prompt_text from {len(prompt_text)} to {max_text_length} characters")
+                prompt_text = prompt_text[:max_text_length] + "... [truncated]"
+                
+            if response_text and len(response_text) > max_text_length:
+                logger.warning(f"Truncating response_text from {len(response_text)} to {max_text_length} characters")
+                response_text = response_text[:max_text_length] + "... [truncated]"
+                
+            # Create new chat
+            with self.db.atomic():
+                chat = CursorChatModel.create(
+                    cursor_project=cursor_project_id,
+                    prompt_key=prompt_key,
+                    prompt_id=prompt_id,
+                    prompt_text=prompt_text or "",
+                    response_text=response_text,
+                    files=files_json,
+                    timestamp=timestamp,
+                    model_name=model_name,
+                    processed_at=datetime.now()
+                )
+                
+                logger.info(f"Added cursor chat: {prompt_key} - {prompt_id} with ID: {chat.chat_id}")
+                return chat.chat_id
+            
+        except Exception as e:
+            logger.error(f"Error adding cursor chat: {e}")
+            logger.debug(f"Traceback: {traceback.format_exc()}")
+            return None
+            
+    def get_cursor_chats(self, 
+                        cursor_project_id: Optional[int] = None, 
+                        start_time: Optional[datetime] = None, 
+                        end_time: Optional[datetime] = None,
+                        limit: int = 100) -> List[Dict[str, Any]]:
+        """Get cursor chats from the database.
+        
+        Args:
+            cursor_project_id: ID of the cursor project (optional)
+            start_time: Start time for filtering (optional)
+            end_time: End time for filtering (optional)
+            limit: Maximum number of chats to return
+            
+        Returns:
+            List[Dict[str, Any]]: List of cursor chats
+        """
+        try:
+            query = CursorChatModel.select()
+            
+            # Apply filters if provided
+            if cursor_project_id is not None:
+                query = query.where(CursorChatModel.cursor_project == cursor_project_id)
+                
+            if start_time is not None:
+                query = query.where(CursorChatModel.timestamp >= start_time)
+                
+            if end_time is not None:
+                query = query.where(CursorChatModel.timestamp <= end_time)
+                
+            # Order by timestamp descending and limit results
+            query = query.order_by(CursorChatModel.timestamp.desc()).limit(limit)
+            
+            # Convert to dictionaries
+            chats = list(query.dicts())
+            
+            # Parse files JSON if present
+            for chat in chats:
+                if chat.get('files'):
+                    try:
+                        chat['files'] = json.loads(chat['files'])
+                    except json.JSONDecodeError:
+                        chat['files'] = None
+            
+            return chats
+            
+        except Exception as e:
+            logger.error(f"Error getting cursor chats: {e}")
             return [] 

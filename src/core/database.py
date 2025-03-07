@@ -81,29 +81,85 @@ class DatabaseManager:
             return False
     
     def _create_tables(self):
-        """Create database tables."""
-        from src.storage.models import (
-            IntervalTypeModel, PromptTypeModel,
-            ScreenshotModel, PromptModel,
-            PromptEmbeddingModel, ReportModel,
-            ReportEmbeddingModel, AppClassificationModel,
-            CursorProjectModel
-        )
-        
-        models = [
-            IntervalTypeModel,
-            PromptTypeModel,
-            ScreenshotModel,
-            PromptModel,
-            PromptEmbeddingModel,
-            ReportModel,
-            ReportEmbeddingModel,
-            AppClassificationModel,
-            CursorProjectModel
-        ]
-        
-        with self.database:
-            self.database.create_tables(models)
+        """Create database tables if they don't exist."""
+        try:
+            from src.storage.models import (
+                ScreenshotModel, PromptModel, PromptTypeModel, PromptEmbeddingModel,
+                ReportModel, ReportEmbeddingModel, IntervalTypeModel,
+                AppClassificationModel, CursorProjectModel, CursorChatModel
+            )
+            
+            # Create tables
+            self.database.create_tables([
+                ScreenshotModel,
+                PromptModel,
+                PromptTypeModel,
+                PromptEmbeddingModel,
+                ReportModel,
+                ReportEmbeddingModel,
+                IntervalTypeModel,
+                AppClassificationModel,
+                CursorProjectModel,
+                CursorChatModel
+            ])
+            
+            # Create default interval types if they don't exist
+            self._create_default_interval_types()
+            
+            # Create default prompt types if they don't exist
+            self._create_default_prompt_types()
+            
+            logger.info("Database tables created successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error creating tables: {e}")
+            return False
+    
+    def _create_default_interval_types(self):
+        """Create default interval types if they don't exist."""
+        try:
+            from src.storage.models import IntervalTypeModel
+            
+            # Default interval types
+            default_types = [
+                'hourly',
+                'daily',
+                'weekly',
+                'monthly'
+            ]
+            
+            # Create each type if it doesn't exist
+            for interval_type in default_types:
+                IntervalTypeModel.get_or_create(interval_name=interval_type)
+                
+            logger.debug("Default interval types created")
+            
+        except Exception as e:
+            logger.error(f"Error creating default interval types: {e}")
+    
+    def _create_default_prompt_types(self):
+        """Create default prompt types if they don't exist."""
+        try:
+            from src.storage.models import PromptTypeModel
+            
+            # Default prompt types
+            default_types = [
+                'code_completion',
+                'code_explanation',
+                'code_generation',
+                'general_question',
+                'cursor_chat'
+            ]
+            
+            # Create each type if it doesn't exist
+            for prompt_type in default_types:
+                PromptTypeModel.get_or_create(prompt_type_name=prompt_type)
+                
+            logger.debug("Default prompt types created")
+            
+        except Exception as e:
+            logger.error(f"Error creating default prompt types: {e}")
     
     @contextmanager
     def get_connection(self):

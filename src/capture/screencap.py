@@ -15,6 +15,8 @@ from src.utils.helpers import get_screenshot_path
 from src.vision.blur import process_screenshot
 from src.analysis.image_analyzer import ImageAnalyzer
 from src.core.database import get_data_dir
+from src.capture.cursor_tracker import CursorTracker
+from src.storage.operations import DatabaseOperations
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,10 @@ class ScreenCapture:
             max_tokens=config.get('analyzer', {}).get('max_tokens', 4096),
             api_key=config.get('analyzer', {}).get('api_key')
         )
+        
+        # Initialize database operations and cursor tracker
+        self.db_ops = DatabaseOperations()
+        self.cursor_tracker = CursorTracker(self.db_ops)
         
         logger.info("Initialized screen capture with config: %s", config)
 
@@ -91,13 +97,39 @@ class ScreenCapture:
             return None
 
     def store_screenshot(self, image_path: str, window_info: Dict[str, str] = None):
-        """Store screenshot metadata in database.
+        """Store screenshot metadata in the database.
         
         Args:
-            image_path: Path to the screenshot
-            window_info: Optional information about the active window
+            image_path: Path to the screenshot image
+            window_info: Window information
         """
         try:
+            if not window_info:
+                window_info = self.aw_client.get_current_window()
+                
+            if not window_info:
+                logger.warning("No window information available, skipping database storage")
+                return
+                
+            logger.debug(f"Window info: {window_info}")
+                
+            # Check if this is Cursor and process chat data if it is
+            app = window_info.get('app', '')
+            if app and 'cursor' in app.lower():
+                logger.info(f"Detected Cursor window: {app}, processing chat data")
+                # Get active project
+                active_project = self.db_ops.get_active_cursor_project()
+                project_id = active_project['project_id'] if active_project else None
+                
+                # Process all cursor chat data
+                self.cursor_tracker.process_all_cursor_chat_data(project_id)
+                
+            # Create context dictionary
+            context = {
+                'window_title': window_info.get('title', ''),
+                'application_name': window_info.get('app', '')
+            }
+            
             logger.debug(f"Storing screenshot metadata for: {image_path}")
             if window_info:
                 logger.debug(f"Window info: {window_info}")
@@ -108,7 +140,7 @@ class ScreenCapture:
             # Create screenshot model
             screenshot = ScreenshotModel.create(
                 image_path=image_path,
-                context=window_info
+                context=context
             )
             logger.debug(f"Created screenshot record with ID: {screenshot.image_id}")
             
@@ -122,7 +154,7 @@ class ScreenCapture:
                 logger.debug("Starting image analysis")
                 analysis = self.image_analyzer.analyze_image(
                     image,
-                    context=window_info
+                    context=context
                 )
                 
                 # Update screenshot with analysis results
@@ -166,7 +198,7 @@ class ScreenCapture:
                                     model_name=prompt_data.get('model_name'),
                                     llm_tool_used=prompt_data.get('llm_tool_used'),
                                     confidence=prompt_data.get('confidence', 0.0),
-                                    context=window_info
+                                    context=context
                                 )
                                 logger.debug(f"Stored new prompt: {prompt_text[:50]}...")
                             else:

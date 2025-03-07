@@ -128,4 +128,24 @@ class CursorProjectModel(BaseModel):
     last_accessed = DateTimeField(default=datetime.now)
 
     class Meta:
-        table_name = 'cursor_projects' 
+        table_name = 'cursor_projects'
+
+class CursorChatModel(BaseModel):
+    """Cursor chat data."""
+    chat_id = AutoField()
+    cursor_project = ForeignKeyField(CursorProjectModel, backref='chats', null=True)
+    prompt_key = CharField()  # Key from the Cursor database (e.g., 'aiService.prompts')
+    prompt_id = CharField()  # Unique identifier for the prompt within Cursor
+    prompt_text = TextField()  # The actual prompt text
+    response_text = TextField(null=True)  # The response text
+    files = TextField(null=True)  # JSON string containing associated files
+    timestamp = DateTimeField()  # When the prompt was created
+    model_name = CharField(null=True)  # The model used for the response
+    processed_at = DateTimeField(default=datetime.now)  # When this record was processed
+
+    class Meta:
+        table_name = 'cursor_chats'
+        indexes = (
+            # Create a unique index on prompt_key and prompt_id
+            (('prompt_key', 'prompt_id'), True),
+        ) 
