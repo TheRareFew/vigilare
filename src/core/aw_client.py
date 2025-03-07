@@ -380,4 +380,91 @@ class ActivityWatchClient:
                 logger.warning("Input watcher not running - no input events available")
                 return {k: 0 for k in ["presses", "clicks", "deltaX", "deltaY", "scrollX", "scrollY"]}
             logger.error(f"Error getting input activity: {e}")
-            return {k: 0 for k in ["presses", "clicks", "deltaX", "deltaY", "scrollX", "scrollY"]} 
+            return {k: 0 for k in ["presses", "clicks", "deltaX", "deltaY", "scrollX", "scrollY"]}
+
+    def get_current_cursor_file(self) -> Optional[Dict[str, Any]]:
+        """Get information about the currently open file in Cursor.
+        
+        Returns:
+            Optional[Dict[str, Any]]: File information or None if not available
+        """
+        try:
+            logger.debug("Attempting to get current Cursor file info")
+            
+            # Get current window info
+            window_info = self.get_current_window()
+            
+            if not window_info:
+                logger.debug("No window info available")
+                return None
+                
+            app = window_info.get("app", "")
+            title = window_info.get("title", "")
+            logger.debug(f"Window info: app='{app}', title='{title}'")
+            
+            # Check if this is a Cursor window
+            if not app or "cursor" not in app.lower():
+                logger.debug(f"Not a Cursor window: {app}")
+                return None
+                
+            logger.debug(f"Detected Cursor window: {app}")
+            
+            # Extract file name from title
+            # Pattern: "filename - project_name - Cursor"
+            cursor_pattern = r'(.*?) - (.*?) - Cursor'
+            match = re.search(cursor_pattern, title)
+            
+            if not match:
+                logger.debug(f"Could not extract file name from title: '{title}'")
+                return None
+                
+            file_name = match.group(1).strip()
+            project_name = match.group(2).strip()
+            
+            # Remove any indicators like "●" from the file name
+            file_name = re.sub(r'^[●\s]+', '', file_name)
+            
+            logger.debug(f"Extracted file name: '{file_name}', project: '{project_name}'")
+            
+            # Get the cursor data path
+            from src.utils.helpers import get_most_recent_workspace_dir, get_cursor_current_file_path
+            cursor_data_path = get_most_recent_workspace_dir()
+            
+            if not cursor_data_path:
+                logger.warning("Could not determine Cursor workspace directory")
+                return None
+                
+            # Get the full file path
+            file_path = get_cursor_current_file_path(cursor_data_path, file_name)
+            
+            if not file_path:
+                logger.warning(f"Could not find file path for: {file_name}")
+                return None
+                
+            # Determine the language based on file extension
+            _, ext = os.path.splitext(file_path)
+            language = ext[1:] if ext else "unknown"  # Remove the dot from extension
+            
+            logger.info(f"Found current Cursor file: {file_path} (Language: {language})")
+            
+            # Read the file content
+            content = self.get_file_content(file_path)
+            
+            if not content:
+                logger.warning(f"Could not read content from file: {file_path}")
+                return None
+                
+            logger.info(f"Successfully read {len(content)} characters from file")
+            
+            return {
+                "file_path": file_path,
+                "language": language,
+                "content": content,
+                "project_name": project_name
+            }
+                
+        except Exception as e:
+            logger.error(f"Error getting current Cursor file: {e}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
+            return None 

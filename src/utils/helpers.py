@@ -232,4 +232,88 @@ def extract_project_path_from_cursor_db(cursor_data_path: str) -> Optional[str]:
         logger.error(f"Error extracting project path from Cursor database: {e}")
         import traceback
         logger.debug(f"Traceback: {traceback.format_exc()}")
+        return None
+
+def get_cursor_current_file_path(cursor_data_path: str, file_name: str) -> Optional[str]:
+    """Get the full path to the current file open in Cursor.
+    
+    Args:
+        cursor_data_path: Path to the Cursor workspace storage directory
+        file_name: Name of the file currently open in Cursor
+        
+    Returns:
+        Optional[str]: Full path to the file or None if not found
+    """
+    try:
+        if not cursor_data_path or not os.path.exists(cursor_data_path):
+            logger.warning(f"Invalid Cursor data path: {cursor_data_path}")
+            return None
+            
+        # Path to the embeddable_files.txt
+        embeddable_files_path = os.path.join(cursor_data_path, "anysphere.cursor-retrieval", "embeddable_files.txt")
+        
+        if not os.path.exists(embeddable_files_path):
+            logger.warning(f"Embeddable files list not found: {embeddable_files_path}")
+            return None
+            
+        logger.debug(f"Reading embeddable files from: {embeddable_files_path}")
+        
+        # Read the embeddable_files.txt file
+        with open(embeddable_files_path, 'r', encoding='utf-8') as f:
+            file_paths = f.read().splitlines()
+        
+        # Clean up the file name (remove any dots or other extras)
+        clean_file_name = file_name.split('.')[0].strip()
+        logger.debug(f"Looking for file with name: '{clean_file_name}'")
+        
+        # Find the file path that ends with the file name
+        for path in file_paths:
+            # Normalize path separators
+            normalized_path = path.replace('\\', '/')
+            
+            # Get just the file name without extension
+            path_file_name = os.path.basename(normalized_path).split('.')[0].strip()
+            
+            if path_file_name == clean_file_name:
+                logger.debug(f"Found matching file: {path}")
+                
+                # Get the project path from the database
+                project_info = get_active_cursor_project_info()
+                
+                if project_info and project_info.get('project_path'):
+                    # Combine project path with the relative file path
+                    full_path = os.path.join(project_info['project_path'], path)
+                    logger.debug(f"Full file path: {full_path}")
+                    return full_path
+                else:
+                    logger.warning("No active project path found in database")
+                    return None
+        
+        logger.warning(f"No matching file found for: {file_name}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error getting Cursor file path: {e}")
+        import traceback
+        logger.debug(f"Traceback: {traceback.format_exc()}")
+        return None
+
+def get_active_cursor_project_info() -> Optional[Dict[str, Any]]:
+    """Get information about the active Cursor project from the database.
+    
+    Returns:
+        Optional[Dict[str, Any]]: Project information or None if not found
+    """
+    try:
+        from src.storage.operations import DatabaseOperations
+        
+        db_ops = DatabaseOperations()
+        project_info = db_ops.get_active_cursor_project()
+        
+        return project_info
+        
+    except Exception as e:
+        logger.error(f"Error getting active Cursor project info: {e}")
+        import traceback
+        logger.debug(f"Traceback: {traceback.format_exc()}")
         return None 
