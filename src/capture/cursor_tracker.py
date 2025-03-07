@@ -166,6 +166,27 @@ class CursorTracker:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return []
             
+    def query_specific_chat_data(self, db_path: str) -> List[Any]:
+        """Query specific chat data from the Cursor database.
+        
+        This method queries the 'workbench.panel.aichat.view.aichat.chatdata' key
+        which contains the structured chat data with tabs and messages.
+        
+        Args:
+            db_path: Path to the Cursor database
+            
+        Returns:
+            List[Any]: Chat data results
+        """
+        query = "SELECT value FROM ItemTable WHERE [key] = 'workbench.panel.aichat.view.aichat.chatdata'"
+        rows = self.query_cursor_db(db_path, query)
+        
+        if not rows or not rows[0] or len(rows[0]) < 1:
+            logger.warning("No chat data found in the database")
+            return []
+            
+        return rows
+            
     def get_cursor_chat_data(self, db_path: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Get prompts and generations from the Cursor database.
         
@@ -192,10 +213,7 @@ class CursorTracker:
             
             # Also query chat data which might contain both prompts and responses
             logger.info(f"Querying chat data from Cursor database: {db_path}")
-            chat_rows = self.query_cursor_db(
-                db_path, 
-                "SELECT [key], value FROM ItemTable WHERE [key] = 'workbench.panel.aichat.view.aichat.chatdata'"
-            )
+            chat_rows = self.query_specific_chat_data(db_path)
             
             # Log raw results for debugging
             logger.info(f"Raw prompt rows: {len(prompt_rows)}")
@@ -293,70 +311,119 @@ class CursorTracker:
                 logger.warning("No generation rows found or invalid format")
                 
             # Parse chat data to extract additional prompts and responses
-            if chat_rows and chat_rows[0] and len(chat_rows[0]) > 1:
+            if chat_rows and len(chat_rows) > 0:
                 try:
                     logger.info("Parsing chat data JSON")
-                    chat_data = json.loads(chat_rows[0][1])
-                    
-                    # Extract tabs from chat data
-                    if isinstance(chat_data, dict) and 'tabs' in chat_data and isinstance(chat_data['tabs'], list):
-                        tabs = chat_data['tabs']
-                        logger.info(f"Found {len(tabs)} tabs in chat data")
+                    # The chat data is in the first column of the first row
+                    chat_data_json = chat_rows[0][0] if len(chat_rows[0]) > 0 else None
+                    if chat_data_json:
+                        chat_data = json.loads(chat_data_json)
                         
-                        # Process each tab
-                        for tab in tabs:
-                            # Extract messages from tab
-                            messages = tab.get('messages', [])
-                            if not messages:
-                                continue
-                                
-                            logger.debug(f"Found {len(messages)} messages in tab {tab.get('id', 'unknown')}")
+                        # Extract tabs from chat data
+                        if isinstance(chat_data, dict) and 'tabs' in chat_data and isinstance(chat_data['tabs'], list):
+                            tabs = chat_data['tabs']
+                            logger.info(f"Found {len(tabs)} tabs in chat data")
                             
-                            # Process each message
-                            for i in range(0, len(messages), 2):
-                                try:
-                                    # Get the user message (prompt)
-                                    user_message = messages[i] if i < len(messages) else None
-                                    if not user_message or user_message.get('role') != 'user':
-                                        continue
+                            # Process each tab
+                            for tab in tabs:
+                                # Try different keys for messages
+                                messages = None
+                                for key in ['messages', 'bubbles']:
+                                    if key in tab and isinstance(tab[key], list):
+                                        messages = tab[key]
+                                        break
                                         
-                                    # Get the assistant message (response)
-                                    assistant_message = messages[i+1] if i+1 < len(messages) else None
-                                    if not assistant_message or assistant_message.get('role') != 'assistant':
-                                        assistant_message = None
-                                        
-                                    # Create a prompt object
-                                    prompt_id = f"chat_{tab.get('id', 'unknown')}_{i}"
-                                    prompt = {
-                                        'id': prompt_id,
-                                        'text': user_message.get('content', ''),
-                                        'timestamp': user_message.get('timestamp', tab.get('timestamp', 0)),
-                                        'files': []
-                                    }
+                                if not messages:
+                                    continue
                                     
-                                    # Add to prompts list
-                                    prompts.append(prompt)
-                                    
-                                    # If we have an assistant message, create a generation object
-                                    if assistant_message:
-                                        generation = {
-                                            'promptId': prompt_id,
-                                            'response': assistant_message.get('content', ''),
-                                            'timestamp': assistant_message.get('timestamp', tab.get('timestamp', 0)),
-                                            'model': assistant_message.get('model', '')
+                                logger.debug(f"Found {len(messages)} messages in tab {tab.get('id', 'unknown')}")
+                                
+                                # Process each message
+                                for i, message in enumerate(messages):
+                                    try:
+                                        # Check if this is a user message
+                                        is_user = False
+                                        if 'role' in message and message['role'] == 'user':
+                                            is_user = True
+                                        elif 'type' in message and message['type'] == 'user':
+                                            is_user = True
+                                            
+                                        if not is_user:
+                                            continue
+                                            
+                                        # Extract the prompt text
+                                        prompt_text = None
+                                        for key in ['content', 'text', 'initText', 'rawText']:
+                                            if key in message and message[key]:
+                                                prompt_text = message[key]
+                                                break
+                                                
+                                        if not prompt_text:
+                                            # Try to extract from delegate
+                                            if 'delegate' in message and message['delegate'] and 'a' in message['delegate']:
+                                                prompt_text = message['delegate']['a']
+                                                
+                                        if not prompt_text:
+                                            continue
+                                            
+                                        # Create a prompt object
+                                        prompt_id = f"chat_{tab.get('id', 'unknown')}_{i}"
+                                        prompt = {
+                                            'id': prompt_id,
+                                            'text': prompt_text,
+                                            'timestamp': message.get('timestamp', tab.get('timestamp', 0)),
+                                            'files': []
                                         }
                                         
-                                        # Add to generations list
-                                        generations.append(generation)
+                                        # Extract files if available
+                                        if 'selections' in message and message['selections']:
+                                            prompt['files'] = [{'path': s.get('text', '')} for s in message['selections'] if 'text' in s]
+                                            
+                                        # Add to prompts list
+                                        prompts.append(prompt)
                                         
-                                except Exception as e:
-                                    logger.error(f"Error processing message: {e}")
-                                    continue
+                                        # Look for the next message as a response
+                                        if i + 1 < len(messages):
+                                            next_message = messages[i + 1]
+                                            
+                                            # Check if this is an assistant message
+                                            is_assistant = False
+                                            if 'role' in next_message and next_message['role'] == 'assistant':
+                                                is_assistant = True
+                                            elif 'type' in next_message and next_message['type'] == 'ai':
+                                                is_assistant = True
+                                                
+                                            if is_assistant:
+                                                # Extract the response text
+                                                response_text = None
+                                                for key in ['content', 'text', 'markdown']:
+                                                    if key in next_message and next_message[key]:
+                                                        response_text = next_message[key]
+                                                        break
+                                                        
+                                                if response_text:
+                                                    # Create a generation object
+                                                    generation = {
+                                                        'promptId': prompt_id,
+                                                        'response': response_text,
+                                                        'timestamp': next_message.get('timestamp', tab.get('timestamp', 0)),
+                                                        'model': next_message.get('model', '')
+                                                    }
+                                                    
+                                                    # Add to generations list
+                                                    generations.append(generation)
+                                    except Exception as e:
+                                        logger.error(f"Error processing message: {e}")
+                                        continue
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse chat data JSON: {e}")
-                    if chat_rows[0][1]:
-                        sample = chat_rows[0][1][:100] + "..." if len(chat_rows[0][1]) > 100 else chat_rows[0][1]
+                    if chat_rows and len(chat_rows) > 0 and len(chat_rows[0]) > 0:
+                        sample = chat_rows[0][0][:100] + "..." if len(chat_rows[0][0]) > 100 else chat_rows[0][0]
                         logger.error(f"Sample of chat data: {sample}")
+                except Exception as e:
+                    logger.error(f"Error processing chat data: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
             
             logger.info(f"Retrieved {len(prompts)} prompts and {len(generations)} generations")
             return prompts, generations
@@ -428,10 +495,23 @@ class CursorTracker:
                 if not prompt_id:
                     # Try to get text from the prompt
                     prompt_text = None
-                    for key in ['prompt', 'text', 'content', 'message']:
+                    for key in ['prompt', 'text', 'content', 'message', 'initText', 'rawText']:
                         if key in prompt:
                             prompt_text = prompt.get(key)
                             if prompt_text:
+                                # If it's a complex structure, try to extract the text
+                                if isinstance(prompt_text, dict) and 'delegate' in prompt_text:
+                                    prompt_text = prompt_text.get('delegate', {}).get('a', '')
+                                elif isinstance(prompt_text, str) and prompt_text.startswith('{'):
+                                    try:
+                                        # Try to parse as JSON
+                                        json_data = json.loads(prompt_text)
+                                        if 'root' in json_data and 'children' in json_data['root']:
+                                            # Try to extract text from the JSON structure
+                                            prompt_text = json_data['root']['children'][0]['children'][0].get('text', '')
+                                    except:
+                                        # Keep the original text if parsing fails
+                                        pass
                                 break
                     
                     if prompt_text:
@@ -488,16 +568,29 @@ class CursorTracker:
                 
                 # Try different possible key names for the prompt text
                 prompt_text = None
-                for key in ['prompt', 'text', 'content', 'message']:
+                for key in ['prompt', 'text', 'content', 'message', 'initText', 'rawText']:
                     if key in prompt:
                         prompt_text = prompt.get(key)
                         if prompt_text:
+                            # If it's a complex structure, try to extract the text
+                            if isinstance(prompt_text, dict) and 'delegate' in prompt_text:
+                                prompt_text = prompt_text.get('delegate', {}).get('a', '')
+                            elif isinstance(prompt_text, str) and prompt_text.startswith('{'):
+                                try:
+                                    # Try to parse as JSON
+                                    json_data = json.loads(prompt_text)
+                                    if 'root' in json_data and 'children' in json_data['root']:
+                                        # Try to extract text from the JSON structure
+                                        prompt_text = json_data['root']['children'][0]['children'][0].get('text', '')
+                                except:
+                                    # Keep the original text if parsing fails
+                                    pass
                             break
                 
                 # Try different possible key names for the response text
                 response_text = None
                 if generation:
-                    for key in ['response', 'text', 'content', 'message', 'textDescription']:
+                    for key in ['response', 'text', 'content', 'message', 'textDescription', 'markdown']:
                         if key in generation:
                             response_text = generation.get(key)
                             if response_text:
@@ -529,6 +622,13 @@ class CursorTracker:
                         if file_paths:
                             files = [{'path': path} for path in file_paths]
                             logger.info(f"Extracted {len(files)} file paths from textDescription")
+                
+                # If we have selections in the prompt, use those as files
+                if 'selections' in prompt and prompt['selections']:
+                    selection_files = [{'path': s.get('text', '')} for s in prompt['selections'] if 'text' in s]
+                    if selection_files:
+                        files.extend(selection_files)
+                        logger.info(f"Added {len(selection_files)} files from selections")
                 
                 # Only add items that have prompt text
                 if prompt_text:

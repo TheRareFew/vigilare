@@ -537,4 +537,53 @@ class DatabaseOperations:
             
         except Exception as e:
             logger.error(f"Error getting cursor chats: {e}")
+            return []
+
+    def get_prompts_in_timeframe(self, start_time: datetime, end_time: datetime) -> List[PromptModel]:
+        """Get prompts within a specific timeframe.
+        
+        Args:
+            start_time: Start time of the timeframe
+            end_time: End time of the timeframe
+            
+        Returns:
+            List[PromptModel]: List of prompt models in the timeframe
+        """
+        try:
+            prompts = (PromptModel
+                      .select(PromptModel, PromptTypeModel)
+                      .join(PromptTypeModel)
+                      .where(
+                          (PromptModel.timestamp >= start_time) &
+                          (PromptModel.timestamp <= end_time)
+                      )
+                      .order_by(PromptModel.timestamp.desc()))
+            
+            return list(prompts)
+        except Exception as e:
+            logger.error(f"Error getting prompts in timeframe: {e}")
+            return []
+
+    def get_screenshots_in_timeframe(self, start_time: datetime, end_time: datetime) -> List[ScreenshotModel]:
+        """Get screenshots within a specific timeframe.
+        
+        Args:
+            start_time: Start time of the timeframe
+            end_time: End time of the timeframe
+            
+        Returns:
+            List[ScreenshotModel]: List of screenshot models in the timeframe
+        """
+        try:
+            screenshots = (ScreenshotModel
+                          .select()
+                          .where(
+                              (ScreenshotModel.timestamp >= start_time) &
+                              (ScreenshotModel.timestamp <= end_time)
+                          )
+                          .order_by(ScreenshotModel.timestamp.desc()))
+            
+            return list(screenshots)
+        except Exception as e:
+            logger.error(f"Error getting screenshots in timeframe: {e}")
             return [] 

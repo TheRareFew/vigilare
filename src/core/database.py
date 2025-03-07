@@ -33,13 +33,18 @@ def get_aw_db_path(testing: bool = False) -> str:
 class DatabaseManager:
     """Manages database connections and initialization."""
     
-    def __init__(self, testing: bool = False):
+    def __init__(self, db_path: str = None, testing: bool = False):
         """Initialize database manager.
         
         Args:
+            db_path: Custom database path (optional)
             testing: Whether to use testing database
         """
-        self.db_path = get_aw_db_path(testing)
+        if db_path:
+            self.db_path = db_path
+        else:
+            self.db_path = get_aw_db_path(testing)
+            
         self.database = None
         logger.info(f"Initialized database manager with path: {self.db_path}")
     
@@ -186,10 +191,11 @@ class DatabaseManager:
 # Global database manager instance
 _db_manager: Optional[DatabaseManager] = None
 
-def init_database(testing: bool = False) -> bool:
+def init_database(db_path: str = None, testing: bool = False) -> bool:
     """Initialize the database.
     
     Args:
+        db_path: Custom database path (optional)
         testing: Whether to use testing database
         
     Returns:
@@ -198,7 +204,7 @@ def init_database(testing: bool = False) -> bool:
     global _db_manager
     
     try:
-        _db_manager = DatabaseManager(testing)
+        _db_manager = DatabaseManager(db_path, testing)
         return _db_manager.initialize()
     except Exception as e:
         logger.error(f"Error in init_database: {e}")

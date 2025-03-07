@@ -13,6 +13,7 @@ import subprocess
 import time
 import threading
 from pathlib import Path
+from datetime import datetime
 
 # Add the parent directory to the Python path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -24,6 +25,7 @@ from src.core.aw_client import ActivityWatchClient
 from src.core.database import init_database, get_database
 from src.core.config import setup_openai_key
 from src.api.server import start_server
+from src.cli.report_cmd import report
 
 logger = logging.getLogger('vigilare')
 aw_modules = ["aw-watcher-afk", "aw-watcher-window", "aw-watcher-input"]  # Removed aw-core as it's not an executable module
@@ -239,10 +241,19 @@ atexit.register(cleanup)
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Vigilare - Intelligent Productivity Tracking')
+    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    
+    # Main command (default)
     parser.add_argument('--config', default=os.path.join(PROJECT_ROOT, 'config', 'config.yaml'),
                       help='Path to configuration file')
     parser.add_argument('--debug', action='store_true',
                       help='Enable debug logging')
+    
+    # Report command
+    report_parser = subparsers.add_parser('report', help='Generate reports')
+    report_parser.add_argument('--hours', type=int, default=1, 
+                             help='Number of hours to look back for the report')
+    
     return parser.parse_args()
 
 def load_config(config_path):
@@ -298,6 +309,53 @@ def main():
         os.makedirs(os.path.dirname(log_config_path), exist_ok=True)
         setup_logging(log_config_path, args.debug)
         
+        # Handle different commands
+        if hasattr(args, 'command') and args.command == 'report':
+            # Start ActivityWatch server in testing mode first
+            if not start_aw_server():
+                logger.error("Failed to start ActivityWatch server")
+                sys.exit(1)
+                
+            # Initialize database using ActivityWatch's database
+            logger.info("Initializing database using ActivityWatch's database...")
+            if not init_database(testing=True):  # Use testing mode to match AW server
+                logger.error("Failed to initialize database")
+                sys.exit(1)
+            
+            from src.analysis.report_generator import ReportGenerator
+            
+            logger.info(f"Generating report for the last {args.hours} hour(s)")
+            
+            # Calculate time range
+            end_time = datetime.now()
+            
+            # Initialize report generator
+            generator = ReportGenerator(testing=True)
+            
+            # Generate report
+            report = generator.generate_hourly_report(end_time)
+            
+            if report:
+                logger.info(f"Report generated successfully with ID: {report.report_id}")
+                print(f"Report generated successfully with ID: {report.report_id}")
+                
+                # Print a preview of the report
+                preview_length = min(500, len(report.report_text))
+                preview = report.report_text[:preview_length] + "..." if len(report.report_text) > preview_length else report.report_text
+                print("\nReport Preview:")
+                print("=" * 80)
+                print(preview)
+                print("=" * 80)
+            else:
+                logger.error("Failed to generate report")
+                print("Failed to generate report")
+            
+            # Close the generator
+            generator.close()
+            return
+        
+        # Default command - start the daemon
+        
         # Start ActivityWatch server in testing mode first
         if not start_aw_server():
             logger.error("Failed to start ActivityWatch server")
@@ -328,8 +386,10 @@ def main():
         
     except KeyboardInterrupt:
         logger.info("Shutting down Vigilare...")
+        cleanup()
     except Exception as e:
         logger.error(f"Error running Vigilare: {e}")
+        cleanup()
         sys.exit(1)
 
 if __name__ == '__main__':
