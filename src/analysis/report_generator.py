@@ -488,6 +488,7 @@ The report should be detailed, insightful, and provide specific, actionable advi
             
             # Call the OpenAI API
             logger.info(f"Generating report with {self.model_name}")
+            logger.info(f"Prompt: {prompt}")
             response = self.openai_client.chat.completions.create(
                 model=self.model_name,
                 messages=[

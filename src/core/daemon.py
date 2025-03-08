@@ -3,13 +3,14 @@
 import logging
 import random
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict
 import re
 
 from src.capture.screencap import ScreenCapture
 from src.core.aw_client import ActivityWatchClient
 from src.storage.operations import DatabaseOperations
+from src.analysis.report_generator import ReportGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,26 @@ class Daemon:
         # Initialize screenshot timing
         self._update_next_screenshot_time()
         
+        # Initialize report generator
+        report_config = config.get('report', {})
+        self.report_enabled = report_config.get('enabled', True)
+        self.report_retry_interval = report_config.get('retry_interval', 900)  # Default: 15 minutes
+        
+        if self.report_enabled:
+            self.report_generator = ReportGenerator(
+                client_id=config.get('aw_client_id', 'vigilare_daemon'),
+                model_name=report_config.get('model_name', 'gpt-4o-mini'),
+                testing=True  # Always use testing mode to match server
+            )
+            
+            # Initialize next report time
+            self.next_report_time = self._calculate_next_report_time()
+            logger.info(f"Automatic hourly reports enabled. Next report at: {datetime.fromtimestamp(self.next_report_time)}")
+        else:
+            self.report_generator = None
+            self.next_report_time = None
+            logger.info("Automatic hourly reports disabled")
+        
         logger.info("Daemon initialized")
         
         # Log the thresholds being used
@@ -71,6 +92,7 @@ class Daemon:
         logger.info(f"Screenshot intervals: min={self.min_interval}s, max={self.max_interval}s")
         logger.info(f"Activity check interval: {self.check_interval}s")
         logger.info(f"Activity lookback window: {self.lookback_window}s")
+        logger.info(f"Next hourly report scheduled at: {datetime.fromtimestamp(self.next_report_time)}")
 
     def _get_activity_level(self) -> str:
         """Determine activity level based on input metrics.
@@ -171,6 +193,43 @@ class Daemon:
         self.next_screenshot_time = current_time + interval
         logger.debug(f"Next screenshot scheduled in {interval:.2f}s")
 
+    def _calculate_next_report_time(self) -> float:
+        """Calculate the next time to generate an hourly report.
+        
+        Returns:
+            float: Unix timestamp for the next report time
+        """
+        now = datetime.now()
+        # Set next report time to the next hour
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return next_hour.timestamp()
+    
+    def _generate_hourly_report(self):
+        """Generate an hourly productivity report."""
+        if not self.report_enabled or not self.report_generator:
+            logger.warning("Report generation is disabled. Skipping hourly report.")
+            return
+            
+        try:
+            logger.info("Generating hourly productivity report")
+            report = self.report_generator.generate_hourly_report()
+            
+            if report:
+                logger.info(f"Hourly report generated successfully with ID: {report.report_id}")
+                # Schedule next report
+                self.next_report_time = self._calculate_next_report_time()
+                logger.info(f"Next hourly report scheduled at: {datetime.fromtimestamp(self.next_report_time)}")
+            else:
+                logger.error("Failed to generate hourly report")
+                # Retry based on configured retry interval
+                self.next_report_time = time.time() + self.report_retry_interval
+                logger.info(f"Will retry report generation at: {datetime.fromtimestamp(self.next_report_time)}")
+        except Exception as e:
+            logger.error(f"Error generating hourly report: {e}")
+            # Retry based on configured retry interval
+            self.next_report_time = time.time() + self.report_retry_interval
+            logger.info(f"Will retry report generation at: {datetime.fromtimestamp(self.next_report_time)}")
+
     def start(self):
         """Start the daemon process."""
         logger.info("Starting daemon process")
@@ -178,6 +237,10 @@ class Daemon:
         try:
             while True:
                 current_time = time.time()
+                
+                # Check if it's time to generate an hourly report
+                if self.report_enabled and self.next_report_time and current_time >= self.next_report_time:
+                    self._generate_hourly_report()
                 
                 # Check if user is active
                 is_active = self.aw_client.is_user_active()
@@ -233,8 +296,12 @@ class Daemon:
                 
         except KeyboardInterrupt:
             logger.info("Daemon process stopped")
+            if self.report_generator:
+                self.report_generator.close()
         except Exception as e:
             logger.error(f"Error in daemon process: {e}")
+            if self.report_generator:
+                self.report_generator.close()
             raise
 
     def _check_cursor_project(self):

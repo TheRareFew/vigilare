@@ -22,7 +22,7 @@ sys.path.insert(0, PROJECT_ROOT)
 from src.utils.logger import setup_logging
 from src.core.daemon import Daemon
 from src.core.aw_client import ActivityWatchClient
-from src.core.database import init_database, get_database
+from src.core.database import init_database, get_database, close_database
 from src.core.config import setup_openai_key
 from src.api.server import start_server
 from src.cli.report_cmd import report
@@ -233,6 +233,13 @@ def cleanup():
         if server_process.poll() is None:
             server_process.kill()
             server_process.wait()
+    
+    # Close any database connections
+    try:
+        close_database()
+        logger.info("Database connections closed")
+    except Exception as e:
+        logger.error(f"Error closing database connections: {e}")
 
 # Register cleanup handler
 import atexit
